@@ -1,0 +1,24 @@
+# Package building directories
+Build
+_build/
+blib/
+
+# Package json and yaml
+*.json
+*.yml
+
+# Temporary experimentation
+doit
+doit[0-9]
+dev/
+
+# Temporary configuration files
+test*.conf
+
+# Temporary output files
+*.out
+*.out[0-9]
+*.orig
+
+# Certificate experimentation
+*.pem

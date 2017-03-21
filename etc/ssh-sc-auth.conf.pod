@@ -1,0 +1,202 @@
+=head1 NAME
+
+ssh-sc-auth.conf - ssh-sc-auth primary configuration file
+
+=head1 SYNOPSIS
+
+ssh-sc-auth.conf
+
+=head1 DESCRIPTION
+
+ssh-sc-auth reads configuration data from ssh-sc-auth.conf.  The file contains keyword-argument pairs, one per line.  Lines starting with '#' and empty lines are interpreted as comments.  Arguments may optionally be enclosed in double quotes (") in order to represent arguments containing spaces.
+
+=head1 OPTIONS
+
+=over 4
+
+=item B<debug> [on|off|yes|no|1|0]
+
+Toggles debugging output and/or logging on/off.  When ssh-sc-auth is called from sshd, it will log debugging messages to SYSLOG only.  Debugging messages are only sent to STDOUT when ssh-sc-auth is called from the command-line.
+
+=item B<use_syslog> [on|off|yes|no|1|0]
+
+Toggles syslog logging on/off.  When ssh-sc-auth is called from sshd, it will log messages to SYSLOG only.  Messages are only sent to STDOUT when ssh-sc-auth is called from the command-line.
+
+=item B<expiry_offset> [seconds]
+
+The number of seconds to use as an offset when determining if a certificate is expired.  Normally this is set to '0' however, there may be cases where an organization may want to implement a grace period while certificates are being renewed.
+
+=item B<ssh_options> [options list]
+
+The list of SSH authorized_keys options to add to the entry being returned.  For example; 'no-agent-forwarding,no-port-forwarding,no-user-rc'.
+
+=item AUTHENTICATION
+
+=over 4
+
+=item B<authn_ldap_uri> [uri]
+
+Specify the LDAP URI to the authentication server.
+
+=item B<authn_ldap_cert_basedn> [certbasedn]
+
+Specify the base DN used to locate the user's certificate.  In some environments the certificate and the user's account entry may reside in different branches in the LDAP server.
+
+=item B<authn_ldap_cert_filter> [certfilter]
+
+Specify the search filter used to locate the user's certificate.  In some environments the certificate and the user's account entry may reside in different branches in the LDAP server.
+
+=item B<authn_ldap_user_basedn> [userbasedn]
+
+Specify the base DN used to locate the user's account.  In some environments the certificate and the user's account entry may reside in different branches in the LDAP server.
+
+=item B<authn_ldap_user_filter> [userfilter]
+
+Specify the search filter used to locate the user's account.  In some environments the certificate and the user's account entry may reside in different branches in the LDAP server.
+
+=item B<authn_ldap_cafile> [cacertfile]
+
+Path to the CA certificate for the authentication server.
+
+=item B<authn_ldap_verify> [none|optional|require]
+
+Specify how to verify the authentication server's certificate.
+
+=item B<authn_ldap_timeout> [seconds]
+
+Specify the timeout, in seconds, to use when connecting to the authentication server.
+
+=item B<authn_ldap_bindpw> [binddn] 
+
+Specify the DN to use for credentialed access to the authentication server.
+
+=item B<authn_ldap_binddn> [bindpw]
+
+Specify the password to use for credentialed access to the authentication server.
+
+=back
+
+=item AUTHORIZATION
+
+=over 4
+
+=item B<authz_ldap_uri> [uri]
+
+Specify the LDAP URI to the authorization server.
+
+=item B<authz_ldap_basedn> [basedn]
+
+Specify the base DN used to locate the user's account.
+
+=item B<authz_ldap_filter> [filter]
+
+Specify the search filter used to locate the user's account.
+
+=item B<authz_ldap_cafile> [cafile]
+
+Path to the CA certificate for the authorization server.
+
+=item B<authz_ldap_verify> [none|optional|require]
+
+Specify how to verify the authorization server's certificate.
+
+=item B<authz_ldap_timeout> [seconds]
+
+Specify the timeout, in seconds, to use when connecting to the authorization server.
+
+=item B<authz_ldap_binddn> [binddn]
+
+Specify the DN to use for credentialed access to the authorization server.
+
+=item B<authz_ldap_bindpw> [bindpw]
+
+Specify the password to use for credentialed access to the authorization server.
+
+=back
+
+=item X509 EXTENSION VERIFICATION
+
+=over 4
+
+=item B<verify_x509_extensions> [no|yes|true|false|1|0]
+
+Toggle the verification of the x509 key usage attributes on/off.
+
+=item B<x509_key_usage> [keyusage]
+
+Specify the key usage bits, as a comma-delimited string, that must be set.
+
+Possible values are:
+    Digital Signature
+    Non Repudiation
+    Key Encipherment
+    Data Encipherment
+    Key Agreement
+    Certificate Sign
+    CRL Sign
+    Encipher Only
+    Decipher Only
+
+=item B<x509_extended_key_usage> [extkeyusage]
+
+Specify the extended key usage attributes, as a comma-delimited string, that must be set.
+
+=back
+
+=item OCSP VERIFICATION
+
+=over 4
+
+=item B<openssl> [path-to-openssl]
+
+Specify the path to the openssl binary.
+
+=item B<ocsp_issuer> [cert]
+
+Specify the path to the issuer certificate to be used for OCSP verification
+
+=item B<ocsp_cafile> [cacert]
+
+Specify the path to the CA certificate to be used for OCSP verification
+
+=item B<ocsp_url> [url]
+
+Specify the OCSP url to be used for OCSP verification.  If this option is blank, ssh-sc-auth will attempt to pull the url from the certificate.
+
+=back
+
+=back
+
+=head1 SEE ALSO
+
+RFC-3280
+
+=head1 BUGS AND LIMITATIONS
+
+ssh-sc-auth assumes that all authentication certificates are signed by the
+same CA.
+
+=head1 AUTHOR
+
+Bennett Samowich <bennett@foolean.org>
+
+=head1 LICENSE AND COPYRIGHT
+
+This file is part of ssh-sc-auth.
+
+Copyright 2017 Bennett Samowich <bennett@foolean.org>
+
+ssh-sc-auth is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+ssh-sc-auth is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with ssh-sc-auth.  If not, see <http://www.gnu.org/licenses/>.
+
+=cut

@@ -1,0 +1,8 @@
+Build.PL
+COPYING
+etc/ssh-sc-auth.conf
+etc/ssh-sc-auth.conf.pod
+MANIFEST
+MANIFEST.SKIP
+README
+sbin/ssh-sc-auth

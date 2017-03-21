@@ -1,0 +1,941 @@
+#!/usr/bin/perl -Tw
+#
+# FILENAME:     ssh-sc-auth
+# AUTHOR:       Bennett Samowich <bennett@foolean.org>
+# DATE:         2017-03-19
+#
+# DESCRIPTION:
+#   SmartCard authentication handler for use with the AuthorizedKeysCommand
+#   option in SSH.
+#
+# Copyright 2017 Bennett Samowich <bennett@foolean.org>
+#
+# ssh-sc-auth is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# ssh-sc-auth is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with ssh-sc-auth.  If not, see <http://www.gnu.org/licenses/>.
+#
+###############################################################################
+use strict;
+use warnings 'all';
+
+use Config::General qw(ParseConfig);
+use Crypt::OpenSSL::RSA;
+use Crypt::OpenSSL::X509;
+use Data::Dumper;
+use English qw(-no_match_vars);
+use File::Basename;
+use Getopt::Long qw(GetOptionsFromArray);
+use IPC::Open3;
+use Net::LDAPS;
+use Scalar::Util qw(tainted);
+use Sys::Hostname;
+use Sys::Syslog;
+
+# Our program name and version
+our $VERSION = '1.0.0';
+our $PROGRAM = basename(__FILE__);
+
+# Miscellaneous variables and flags
+my $EMPTY_STRING = q{};    # Empty string macro for readability
+my $SYSLOG_OPEN  = 0;      # Flag to indicate if syslog is open
+
+my %options = (
+    'config'                 => '/usr/local/ssh-sc/etc/ssh-sc-auth.conf',
+    'debug'                  => 0,
+    'help'                   => 0,
+    'hostname'               => hostname(),
+    'use_syslog'             => 1,
+    'version'                => 0,
+    'openssl'                => '/usr/bin/openssl',
+    'ocsp_url'               => q{},
+    'ocsp_cafile'            => q{},
+    'ocsp_issuer'            => q{},
+    'authz_ldap_uri'         => q{},
+    'authz_ldap_basedn'      => q{},
+    'authz_ldap_filter'      => q{},
+    'authz_ldap_cafile'      => q{},
+    'authz_ldap_verify'      => 'never',
+    'authz_ldap_timeout'     => '10',
+    'authz_ldap_binddn'      => q{},
+    'authz_ldap_bindpw'      => q{},
+    'ssh_options'            => q{},
+    'expiry_offset'          => 0,
+    'authn_ldap_uri'         => q{},
+    'authn_ldap_basedn'      => q{},
+    'authn_ldap_cert_basedn' => q{},
+    'authn_ldap_cert_filter' => q{},
+    'authn_ldap_user_basedn' => q{},
+    'authn_ldap_user_filter' => q{},
+    'authn_ldap_cafile'      => q{},
+    'authn_ldap_verify'      => 'never',
+    'authn_ldap_timeout'     => '10',
+    'authn_ldap_bindpw'      => q{},
+    'authn_ldap_binddn'      => q{},
+    'verify_x509_extensions' => 0,
+    'x509_key_usage'         => q{},
+);
+
+# Argument specifications for Getopt::Long.
+my @arg_specs = qw(
+  config|c=s
+  debug|d
+  help|h|?
+  hostname=s
+  version|V
+);
+
+# Load our configuration file and command-line options
+my %CONFIG = load_config(@ARGV);
+
+# Announce how we were called
+if ( $ENV{'_'} eq $PROGRAM_NAME ) {
+    debug( 'called as: %s %s', $PROGRAM_NAME, join q{ }, @ARGV );
+}
+else {
+    debug( '%s called: %s %s', $ENV{'_'}, $PROGRAM_NAME, join q{ }, @ARGV );
+}
+
+# Ensure the user is authorized for access to this host
+if ( user_authz( $CONFIG{'user'}, $CONFIG{'hostname'} ) ) {
+    user_authn( $CONFIG{'user'} );
+}
+
+exit 0;
+
+# expand_macros
+#   Expand any macros found in a string.
+#   Current macros are:
+#       %u = username
+#       %h = hostname
+#       %d = datestamp
+sub expand_macros {
+    my $string = shift || return;
+
+    ## no critic(ProhibitMagicNumbers)
+    my ( $day, $month, $year ) = (localtime)[ 3, 4, 5 ];
+    my $datestamp = sprintf '%04i%02i%02i000000Z',
+      ( $year + 1900 ), ( $month + 1 ), $day;
+    ## use critic
+
+    my $hostname = $CONFIG{'hostname'};
+    my $username = $CONFIG{'user'};
+
+    # Expand the macros (need proper handling for %%)
+    $string =~ s/%h/$hostname/smxg;
+    $string =~ s/%u/$username/smxg;
+    $string =~ s/%d/$datestamp/smxg;
+
+    return $string;
+}
+
+# is_valid_ocsp
+#   Validate a certificate using OCSP
+sub is_valid_ocsp {
+    my $serial = shift || return 0;
+
+    # ocsp validation can be disabled by not having a URL
+    if ( !defined $CONFIG{'ocsp_url'} || $CONFIG{'ocsp_url'} eq q{} ) {
+        debug('ocsp url not set, skipping certificate validation');
+        return 1;
+    }
+
+    # ocsp validation can be disabled by not having an issuer
+    if ( !defined $CONFIG{'ocsp_issuer'} || $CONFIG{'ocsp_issuer'} eq q{} ) {
+        debug('ocsp issuer not set, skipping certificate validation');
+        return 1;
+    }
+
+    # ocsp validation can be disabled by not having a CA file
+    if ( !defined $CONFIG{'ocsp_cafile'} || $CONFIG{'ocsp_cafile'} eq q{} ) {
+        debug('ocsp cafile not set, skipping certificate validation');
+        return 1;
+    }
+
+    # Assemble the OCSP validation command (openssl)
+    my $command =
+      sprintf
+      '"%s" ocsp -issuer "%s" -no_nonce -CAfile "%s" -url "%s" -serial "0x%s"',
+      $CONFIG{'openssl'}, $CONFIG{'ocsp_issuer'}, $CONFIG{'ocsp_cafile'},
+      $CONFIG{'ocsp_url'}, $serial;
+
+    # Call out to openssl to perform the OCSP validation
+    local $ENV{'PATH'} = q{};
+    my ( $r, $w, $e );    # Create the read, write, and error handlers
+    my $pid = open3( $w, $r, $e, $command );
+    waitpid $pid, 0;
+    my $ocsp_result = <$r>;       # Read the result from the OCSP server
+    $ocsp_result =~ s/\n//smx;    # Strip the trailing newline
+
+    # Parse the result
+    debug( 'ocsp result for certificate %s is "%s"', $serial, $ocsp_result );
+    if ( $ocsp_result eq 'Response verify OK' ) {
+        return 1;
+    }
+    return 0;
+}
+
+# get_ocsp_uri
+#   Get the OCSP URI from a certificate.
+#     unfortunately Crypt::OpenSSL::X509 returns a string for the
+#     AuthorityInfoAccess extension rather than a data object so
+#     we have to do this the hard way for now.
+sub get_ocsp_uri {
+    my $x509 = shift || return;
+
+    my $cert = $x509->as_string();
+    my $command = sprintf '"%s" x509 -noout -ocsp_uri', $CONFIG{'openssl'};
+
+    # Call out to openssl to get the OCSP URI
+    local $ENV{'PATH'} = q{};
+    my ( $r, $w, $e );    # Create the read, write, and error handlers
+    my $pid = open3( $w, $r, $e, $command );
+    printf {$w} "%s\n", $cert; # Send the certificate
+    waitpid $pid, 0;
+    my $ocsp_uri = <$r>;       # Read the result
+    $ocsp_uri =~ s/\n//smx;    # Strip the trailing newline
+
+    $ocsp_uri = untaint_url($ocsp_uri);
+    return $ocsp_uri;
+}
+
+# is_active
+#   Verify that a user's account is active
+sub is_active {
+    my ( $ldap, $username ) = @_;
+
+    my $filter = expand_macros( $CONFIG{'authn_ldap_user_filter'} );
+    debug( 'expanded filter is "%s"', $filter );
+
+    # Search for the user and the host atribute, including the wildcard
+    # attribute of '*'.  We only need to determine if a record exists so
+    # all we need LDAP to return is the matching DN.
+    debug( 'searching %s for the account status of %s',
+        $CONFIG{'authn_ldap_uri'}, $username );
+    my $ldap_msg = $ldap->search(
+        base      => $CONFIG{'authn_ldap_user_basedn'},
+        filter    => $filter,
+        attrs     => ['dn'],
+        sizelimit => 0,
+    );
+
+    # A search failure will also mean the user is not authorized
+    if ( $ldap_msg->code != 0 ) {
+        error( 'search for uid=%s failed: %s', $username, $ldap_msg->error() );
+        return 0;
+    }
+
+    # Zero entries returned means the user is not active
+    if ( $ldap_msg->count == 0 ) {
+        return 0;
+    }
+    return 1;
+
+}
+
+# verify_x509_key_usage
+#    verify the x509 keyUsage bits of a certificate
+sub verify_x509_key_usage {
+    my ( $x509, $username ) = @_;
+
+    if ( !defined $x509 || !defined $username ) {
+        return 0;
+    }
+
+    my $extensions = $x509->extensions_by_name();
+#    foreach my $key ( keys $extensions ) {
+#        debug( 'found extension "%s"', $key );
+#    }
+
+    if ( exists $extensions->{'keyUsage'} ) {
+        my %keyusage = Crypt::OpenSSL::X509::Extension::hash_bit_string(
+            $extensions->{'keyUsage'} );
+        foreach my $usage ( split /,/smx, $CONFIG{'x509_key_usage'} ) {
+
+            # Remove leading and trailing whitespace
+            $usage =~ s/^\s+|\s+$//smxg;
+
+            if ( $keyusage{$usage} == 1 ) {
+                debug( '"%s" bit is set in certificate %s for %s',
+                    $usage, $x509->serial(), $username );
+            }
+            else {
+                error( '"%s" bit is not set in certificate %s for %s, skipping',
+                    $usage, $x509->serial(), $username );
+                return 0;
+            }
+        }
+    }
+    else {
+        error( 'no keyUsage extension in certificate %s for %s, skipping',
+            $x509->serial(), $username );
+    }
+
+    if ( exists $extensions->{'extendedKeyUsage'} ) {
+        my @extkeyusage = Crypt::OpenSSL::X509::Extension::extKeyUsage(
+            $extensions->{'extendedKeyUsage'} );
+        debug( '%s', Dumper( \@extkeyusage ) );
+
+        foreach
+          my $extusage ( split /,/smx, $CONFIG{'x509_extended_key_usage'} )
+        {
+            # Remove leading and trailing whitespace
+            $extusage =~ s/^\s+|\s+$//smxg;
+
+            my $good = 0;
+            foreach my $extkey (@extkeyusage) {
+                if ( $extkey eq $extusage ) {
+                    debug( 'certificate %s for %s has %s set',
+                        $x509->serial(), $username, $extusage );
+                    $good = 1;
+                    last;
+                }
+            }
+
+            if ( $good == 0 ) {
+                debug( 'certificate %s for %s does not have %s set',
+                    $x509->serial(), $username, $extusage );
+                return 0;
+            }
+        }
+    }
+    else {
+        error(
+            'no extendedKeyUsage extension in certificate %s for %s, skipping',
+            $x509->serial(), $username
+        );
+    }
+    return 1;
+}
+
+# user_authn
+#   Generate the ssh-rsa keys for any certs belonging to the user
+sub user_authn {
+    my $username = shift || return;
+
+    # Connect to the remote server
+    my $ldap = ldap_connect(
+        $CONFIG{'authn_ldap_uri'},    $CONFIG{'authn_ldap_binddn'},
+        $CONFIG{'authn_ldap_bindpw'}, $CONFIG{'authn_ldap_capath'},
+        $CONFIG{'authn_ldap_cafile'}, $CONFIG{'authn_ldap_verify'},
+        $CONFIG{'authn_ldap_timeout'},
+    );
+    if ( !defined $ldap ) {
+        fatal( 'unable to connect to %s', $CONFIG{'authn_ldap_uri'} );
+    }
+
+    # Ensure the user's account is active
+    if ( !is_active( $ldap, $username ) ) {
+        debug( '%s is not active', $username );
+        return;
+    }
+    debug( '%s is active', $username );
+
+    my $filter = expand_macros( $CONFIG{'authn_ldap_cert_filter'} );
+    debug( 'expanded filter is "%s"', $filter );
+
+    # Search for the certificate
+    debug( 'searching %s for certificates belonging to %s',
+        $options{'authn_ldap_uri'}, $username );
+    my $ldap_msg = $ldap->search(
+        base      => $options{'authn_ldap_cert_basedn'},
+        filter    => $filter,
+        attrs     => ['userCertificate'],
+        sizelimit => 0,
+    );
+
+    # Disconnect from the server
+    ldap_disconnect($ldap);
+
+    # Process the results, if any
+    if ( $ldap_msg->code != 0 ) {
+        error( 'search for %s failed: %s', $username, $ldap_msg->error() );
+        return;
+    }
+
+    if ( $ldap_msg->count == 0 ) {
+        debug( 'no record retrieved for %s', $username );
+        return;
+    }
+
+    foreach my $entry ( $ldap_msg->entries ) {
+        if ( $entry->exists('userCertificate;binary') ) {
+
+            # Get the certificate as a Crypt::OpenSSL::X509 object
+            my $x509 = Crypt::OpenSSL::X509->new_from_string(
+                $entry->get_value('userCertificate;binary'),
+                Crypt::OpenSSL::X509::FORMAT_ASN1
+            );
+
+            # Make sure the certificate is the correct type
+            if ( $CONFIG{'verify_x509_extensions'} == 1 ) {
+                if ( verify_x509_key_usage( $x509, $username ) == 0 ) {
+                    error(
+'insufficient keyUsage in certificate %s for %s, skipping',
+                        $x509->serial(), $username
+                    );
+                    next;
+                }
+            }
+            else {
+                debug('x509 extension verification disabled');
+            }
+
+            # Make sure the certificate is not expired
+            if ( $x509->checkend( $options{'expiry_offset'} ) == 1 ) {
+                error( 'certificate %s for %s is expired, skipping',
+                    $x509->serial(), $username );
+                next;
+            }
+            debug( 'certificate %s for %s is not expired',
+                $x509->serial(), $username );
+
+            # Get the OCSP URI if we don't already have it
+            if ( !defined $CONFIG{'ocsp_url'} || $CONFIG{'ocsp_url'} eq q{} ) {
+                my $ocsp_uri = get_ocsp_uri( $x509 );
+                $CONFIG{'ocsp_url'} = $ocsp_uri;
+                debug( 'certificate %s for %s has a ocsp_uri of %s',
+                    $x509->serial(), $username, $ocsp_uri );
+            }
+
+            # Validate the certificate using OCSP
+            if ( !is_valid_ocsp( $x509->serial() ) ) {
+                debug( 'cerficate %s for %s is not valid, skipping',
+                    $x509->serial(), $username );
+                next;
+            }
+            debug( 'cerficate %s for %s is valid', $x509->serial(), $username );
+
+            # Extract the public key from the user's certificate
+            debug( 'extracting public key from certificate %s for %s',
+                $x509->serial(), $username );
+            my $rsa_key =
+              Crypt::OpenSSL::RSA->new_public_key( $x509->pubkey() )
+              ->get_public_key_x509_string();
+
+            # For now, we must call out to ssh-keygen to convert the PEM
+            # public key to SSH authorized_keys format.
+            if ( defined $rsa_key && $rsa_key ne q{} ) {
+                local $ENV{'PATH'} = q{};
+                my ( $r, $w, $e );  # Create the read, write, and error handlers
+
+                # Convert the certificate to a ssh-rsa key
+                debug(
+'converting public key from certificate %s to ssh-rsa key for %s',
+                    $x509->serial(), $username
+                );
+                my $pid = open3( $w, $r, $e,
+                    '/usr/bin/ssh-keygen -i -m PKCS8 -f /dev/stdin' );
+                printf {$w} "%s\n", $rsa_key;    # Send the PEM public key
+                waitpid $pid, 0;                 # Wait for ssh-keygen to finish
+                my $ssh_key = <$r>;              # Read the resulting SSH key
+                $ssh_key =~ s/\s$//smx;          # Remove trailing whitespace
+
+                # If we have a SSH key then we'll assemble and print the
+                # authorized_keys line.
+                if ( defined $ssh_key && $ssh_key ne q{} ) {
+                    debug('adding SSH options and username to key');
+                    printf "%s%s %s\n",
+                      $CONFIG{'ssh_options'}, $ssh_key, $username;
+                }
+                else {
+                    error( 'unable to convert certificate %s for %s',
+                        $x509->serial(), $username );
+                }
+            }
+        }
+        else {
+            debug( 'no certificate found for %s', $username );
+        }
+    }
+
+    return;
+}
+
+# user_authz
+#   Verify that the user is authorized for access
+sub user_authz {
+    my ( $username, $hostname ) = @_;
+
+    # No URI means the user is authorized by default
+    if ( !defined $CONFIG{'authz_ldap_uri'}
+        || $CONFIG{'authz_ldap_uri'} eq $EMPTY_STRING )
+    {
+        debug('no authz uri, skipping authorization');
+        debug( '%s is authorized for access to %s', $username, $hostname );
+        return 1;
+    }
+
+    # Connect to the remote server
+    my $ldap = ldap_connect(
+        $CONFIG{'authz_ldap_uri'},    $CONFIG{'authz_ldap_binddn'},
+        $CONFIG{'authz_ldap_bindpw'}, $CONFIG{'authz_ldap_capath'},
+        $CONFIG{'authz_ldap_cafile'}, $CONFIG{'authz_ldap_verify'},
+        $CONFIG{'authz_ldap_timeout'},
+    );
+    if ( !defined $ldap ) {
+        fatal( 'unable to connect to %s', $CONFIG{'authz_ldap_uri'} );
+    }
+
+    my $filter = expand_macros( $CONFIG{'authz_ldap_filter'} );
+    debug( 'expanded filter is "%s"', $filter );
+
+    # Search for the user and the host atribute, including the wildcard
+    # attribute of '*'.  We only need to determine if a record exists so
+    # all we need LDAP to return is the matching DN.
+    debug(
+        'searching %s for uid=%s, host=%s',
+        $CONFIG{'authz_ldap_uri'},
+        $username, $hostname
+    );
+    my $ldap_msg = $ldap->search(
+        base      => $CONFIG{'authz_ldap_basedn'},
+        filter    => $filter,
+        attrs     => ['dn'],
+        sizelimit => 0,
+    );
+
+    # Disconnect from the server
+    ldap_disconnect($ldap);
+
+    # A search failure will also mean the user is not authorized
+    if ( $ldap_msg->code != 0 ) {
+        error( 'search for uid=%s, host=%s failed: %s',
+            $username, $hostname, $ldap_msg->error() );
+        return 0;
+    }
+
+    # Zero entries returned means the user does not have access to this host
+    if ( $ldap_msg->count == 0 ) {
+        debug( '%s is not authorized for access to %s', $username, $hostname );
+        return 0;
+    }
+
+    # ... successfully authorized
+    debug( '%s is authorized for access to %s', $username, $hostname );
+    return 1;
+}
+
+# ldap_connect
+#   Connect to a remote LDAP server
+## no critic(ProhibitManyArgs)
+sub ldap_connect {
+    my ( $uri, $binddn, $bindpw, $capath, $cafile, $verify, $timeout ) = @_;
+    ## use critic
+
+    debug( 'connecting to %s', $uri );
+    my $ldap = Net::LDAPS->new(
+        $uri,
+        verify  => $verify,
+        cafile  => $cafile,
+        capath  => $capath,
+        timeout => $timeout,
+        onerror => undef
+    );
+
+    # Determine if we were able to connect to the remote server
+    if ( !defined $ldap ) {
+        fatal( 'unable to connect to %s', $uri );
+    }
+
+    # Determine if we were able to connect to the remote server
+    if ( !defined $ldap ) {
+        fatal( 'unable to connect to %s', $uri );
+    }
+
+    # Bind to the server
+    my $bind_result;
+    if ( !defined $binddn || $binddn eq $EMPTY_STRING ) {
+        debug( 'binding to %s anonymously', $uri );
+        $bind_result = $ldap->bind();
+    }
+    else {
+        debug( 'binding to %s as "%s"', $uri, $binddn );
+        $bind_result = $ldap->bind( $binddn, password => $bindpw );
+    }
+    if ( $bind_result->code != 0 ) {
+        fatal( 'unable to bind to server: %s', $bind_result->error );
+    }
+
+    return $ldap;
+}
+
+# ldap_disconnect
+#   Disconnect from a remote LDAP server
+sub ldap_disconnect {
+    my $ldap = shift || return;
+
+    # Disconnect from the server
+    if ( defined $ldap ) {
+        debug( 'disconnecting from %s', $ldap->uri() );
+        $ldap->unbind();
+        $ldap->disconnect();
+    }
+
+    return;
+}
+
+# load_config
+#   Load configuration options from both the configuration
+#   file and from the command-line.
+sub load_config {
+    my @argv = @_;
+
+    # Parse the command-line options (pass-1)
+    # This allows us to change the path to the configuration file
+    Getopt::Long::Configure('bundling');
+    if ( !GetOptionsFromArray( \@argv, \%options, @arg_specs ) ) {
+        usage();
+        exit 1;
+    }
+    if ( $options{'help'} )    { usage();   exit 1; }
+    if ( $options{'version'} ) { version(); exit 1; }
+
+    # Parse the configuration file
+    if ( !-e $options{'config'} ) {
+        fatal( 'unable to load configuration file "%s", file not found',
+            $options{'config'} );
+        return;
+    }
+    my %config = ParseConfig(
+        -AutoTrue              => 1,
+        -ConfigFile            => $options{'config'},
+        -DefaultConfig         => \%options,
+        -ForceArray            => 1,
+        -LowerCaseNames        => 1,
+        -MergeDuplicateOptions => 1,
+    );
+    if ( !%config ) {
+        fatal( 'unable to parse configuration file "%s"', $options{'config'} );
+        return;
+    }
+
+    # Parse the command-line options (pass-2)
+    GetOptions( \%config, @arg_specs );
+
+    # Non-affiliated username argument takes precedence
+    if ( defined $ARGV[0] ) {
+        $config{'user'} = $ARGV[0];
+    }
+
+    # We must have a username
+    if ( $config{'user'} eq q{} ) {
+        fatal('must supply a username');
+        exit 1;    # should never get here
+    }
+
+    # Make sure the username is sane
+    $config{'user'} = untaint_username( $config{'user'} );
+
+    # Make sure we have a sane URI
+    $config{'authz_ldap_uri'} = untaint_uri( $config{'authz_ldap_uri'} );
+    $config{'authn_ldap_uri'} = untaint_uri( $config{'authn_ldap_uri'} );
+    if ( !defined $config{'authn_ldap_uri'} ) {
+        fatal( 'authn_ldap_uri not specified in %s', $config{'config'} );
+        exit 1;    # should never get here
+    }
+
+    if ( $config{'authn_ldap_user_basedn'} eq $EMPTY_STRING ) {
+        fatal( 'authn_ldap_user_basedn not specified in %s',
+            $config{'config'} );
+        exit 1;    # should never get here
+    }
+    if ( $config{'authn_ldap_cert_basedn'} eq $EMPTY_STRING ) {
+        fatal( 'authn_ldap_cert_basedn not specified in %s',
+            $config{'config'} );
+        exit 1;    # should never get here
+    }
+
+    # Make sure that we have a user search filter
+    if ( $config{'authn_ldap_user_filter'} eq $EMPTY_STRING ) {
+        fatal( 'authn_ldap_user_filter not specified in %s',
+            $config{'config'} );
+        exit 1;    # should never get here
+    }
+
+    # Make sure that we have a cert search filter
+    if ( $config{'authn_ldap_cert_filter'} eq $EMPTY_STRING ) {
+        fatal( 'authn_ldap_cert_filter not specified in %s',
+            $config{'config'} );
+        exit 1;    # should never get here
+    }
+
+    if ( defined $config{'authz_ldap_uri'} ) {
+        if ( $config{'authz_ldap_basedn'} eq $EMPTY_STRING ) {
+            fatal( 'authz_ldap_basedn not specified in %s', $config{'config'} );
+            exit 1;    # should never get here
+        }
+        if ( $config{'authz_ldap_filter'} eq $EMPTY_STRING ) {
+            fatal( 'authz_ldap_filter not specified in %s', $config{'config'} );
+            exit 1;    # should never get here
+        }
+    }
+
+    if ( defined $config{'ssh_options'} && $config{'ssh_options'} ne q{} ) {
+        $config{'ssh_options'} .= q{ };
+    }
+
+    # Untaint OCSP options
+    $config{'ocsp_url'}    = untaint_url( $config{'ocsp_url'} );
+    $config{'openssl'}     = untaint_path( $config{'openssl'} );
+    $config{'ocsp_issuer'} = untaint_path( $config{'ocsp_issuer'} );
+    $config{'ocsp_cafile'} = untaint_path( $config{'ocsp_cafile'} );
+
+    return (%config);
+}
+
+# untaint_path(PATH) - untaint a pathname
+sub untaint_path {
+    my $path = shift || return;
+
+    # No need to do anything if it's not tainted
+    if ( !tainted($path) ) { return ($path); }
+
+    # untaint the path
+    if ( $path =~ /^([\w\/\-.]+)$/smx ) {
+        return ($1);
+    }
+    else {
+        fatal( 'Unable to untaint %s', $path );
+    }
+
+    # Should never get here
+    return $path;
+}
+
+# untaint_username(USERNAME) - untaint a username (minimal POSIX)
+sub untaint_username {
+    my $username = shift || return;
+
+    ## no critic(ProhibitEnumeratedClasses)
+    if ( $username =~ /^(\p{IsLower}[a-z0-9\-]*)$/smx ) {
+        ## use critic
+        return $1;
+    }
+    fatal( 'Invalid username "%s"', $username );
+
+    # Should never get here
+    return $username;
+}
+
+# untaint_url(URL) - untaint a HTTP/HTTPS URL
+sub untaint_url {
+    my $url = shift || return;
+
+    # No need to do anything if it's not tainted
+    if ( !tainted($url) ) { return ($url); }
+
+    # untaint the url
+    if ( $url =~ /^(http|https):\/\/([\w\/\-\:.]+)$/smx ) {
+        return "$1://$2";
+    }
+    fatal( 'Unable to untaint %s', $url );
+
+    # Should never get here
+    return $url;
+}
+
+# untaint_uri(URI) - untaint a LDAP URI
+sub untaint_uri {
+    my $uri = shift || return;
+
+    # No need to do anything if it's not tainted
+    if ( !tainted($uri) ) { return ($uri); }
+
+    # untaint the uri
+    if ( $uri =~ /^(ldap|ldaps):\/\/([\w\/\-\:.]+)$/smx ) {
+        return "$1://$2";
+    }
+    fatal( 'Unable to untaint %s', $uri );
+
+    # Should never get here
+    return $uri;
+}
+
+# do_syslog($fmt, @args) - Handle the actual writing to syslog
+sub do_syslog {
+    my ( $fmt, @args ) = @_;
+
+    if ( $SYSLOG_OPEN == 0 ) {
+        openlog( $PROGRAM, 'pid', 'user' );
+        $SYSLOG_OPEN = 1;
+    }
+    syslog( 'info', $fmt, @args );
+
+    return;
+}
+
+# error($fmt, @args) - Error output handler
+sub error {
+    my ( $fmt, @args ) = @_;
+
+    if ( $ENV{'_'} eq $PROGRAM_NAME ) {
+        printf {*STDERR} 'error: ' . $fmt . "\n", @args;
+    }
+    if ( $options{'use_syslog'} ) {
+        do_syslog( 'error: ' . $fmt, @args );
+    }
+
+    return;
+}
+
+# fatal($fmt, @args) - Fatal error output handler
+sub fatal {
+    my ( $fmt, @args ) = @_;
+
+    if ( $ENV{'_'} eq $PROGRAM_NAME ) {
+        printf {*STDERR} 'fatal: ' . $fmt . "\n", @args;
+    }
+    if ( $options{'use_syslog'} ) {
+        do_syslog( 'fatal: ' . $fmt, @args );
+    }
+    closelog();
+
+    exit 1;
+}
+
+# debug($fmt, @args) - Debug output handler
+sub debug {
+    my ( $fmt, @args ) = @_;
+
+    if ( $options{'debug'} ) {
+        if ( $ENV{'_'} eq $PROGRAM_NAME ) {
+            printf {*STDERR} 'debug: ' . $fmt . "\n", @args;
+        }
+        if ( $options{'use_syslog'} ) {
+            do_syslog( 'debug: ' . $fmt, @args );
+        }
+    }
+
+    return;
+}
+
+# version - Standard version routine
+sub version {
+
+    printf "%s v%s\n", $PROGRAM, $VERSION;
+    return;
+}
+
+# usage - Standard usage routine
+sub usage {
+
+    version();
+    printf "usage: %s [OPTIONS] username\n\n", $PROGRAM;
+    printf "Where\n";
+    printf "   -c, --config [FILE] - alternate configuration file\n";
+    printf "   -d, --debug         - print debugging output\n";
+    printf "   -h, --help          - print this message\n";
+    printf "       --hostname      - specify the hostname (for debugging)\n";
+    printf "   -v, --version       - print version information\n";
+    exit 1;
+}
+
+__END__
+
+=head1 NAME
+
+ssh-sc-auth - SSH SmartCard Authentication
+
+=head1 SYNOPSIS
+
+Command-line
+    ssh-sc-auth jdoe
+    ssh-sc-auth -d -c alternate-config.conf jdoe
+
+sshd_config
+    # /etc/ssh/sshd_config
+    AuthorizedKeysCommand /usr/local/ssh-sc/sbin/ssh-sc-auth
+    AuthorizedKeysCOmmandUser ssh-auth
+
+
+=head1 DESCRIPTIONS
+
+ssh-sc-auth is a smart-card authentication handler for use with the
+AuthorizedKeysCommand feature of SSH.  The program will return a dynamic
+authorized_keys entry for the user, based on a certificate stored in a remote
+LDAP server.
+
+=head1 COMMAND-LINE OPTIONS
+
+=over 4
+
+=item [username]
+
+Specify the username to generate the dynamic authorized_keys entry for
+
+=item -c, --config [FILE]
+
+Specify an alternate configuration file
+
+=item -d, --debug
+
+Print additional debugging output
+
+=item -h, --help
+
+Print the usage mesage
+
+=item --hostname
+
+Specify an alternate hostname (usefule for debugging)
+
+=item -v, --version
+
+Print version information
+
+=back
+
+=head1 RUN-TIME OPTIONS
+
+When invoked via the AuthorizedKeysCommand, SSH will send the username as the
+only command-line argument.  The other options are used for debugging and
+testing purposes.
+
+=back
+
+=head1 FILES
+
+ssh-sc-auth.conf - Primary configuration file
+
+=head1 SEE ALSO
+
+ssh-sc-auth.conf(5)
+
+=head1 BUGS AND LIMITATIONS
+
+ssh-sc-auth assumes that all authentication certificates are signed by the
+same CA.
+
+=head1 AUTHOR
+
+Bennett Samowich <bennett@foolean.org>
+
+=head1 LICENSE AND COPYRIGHT
+
+This file is part of ssh-sc-auth.
+
+Copyright 2017 Bennett Samowich <bennett@foolean.org>
+
+ssh-sc-auth is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+ssh-sc-auth is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with ssh-sc-auth.  If not, see <http://www.gnu.org/licenses/>.
+
+=cut

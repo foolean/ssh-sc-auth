@@ -1,0 +1,22 @@
+ssh-sc-auth - SSH SmartCard Authentication
+
+DESCRIPTION
+-----------
+
+ssh-sc-auth is a smart-card authentication handler for use with the
+AuthorizedKeysCommand feature of SSH.  The program will return a dynamic
+authorized_keys entry for the user, based on a certificate stored in a remote
+LDAP server.
+
+INSTALLATION
+------------
+
+perl Build.PL
+./Build
+./Build install
+
+UNINSTALL
+---------
+
+./Build uninstall
+
