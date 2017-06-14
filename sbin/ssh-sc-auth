@@ -48,6 +48,7 @@ our $PROGRAM = basename(__FILE__);
 my $EMPTY_STRING = q{};    # Empty string macro for readability
 my $SYSLOG_OPEN  = 0;      # Flag to indicate if syslog is open
 
+# Option defaults
 my %options = (
     'config'                 => '/usr/local/ssh-sc/etc/ssh-sc-auth.conf',
     'debug'                  => 0,
@@ -81,6 +82,7 @@ my %options = (
     'authn_ldap_bindpw'      => q{},
     'authn_ldap_binddn'      => q{},
     'verify_x509_extensions' => 0,
+    'verify_ocsp'            => 0,
     'x509_key_usage'         => q{},
 );
 
@@ -94,22 +96,33 @@ my @arg_specs = qw(
 );
 
 # Load our configuration file and command-line options
+# note: $CONFIG should be used for option reference as
+#       it will contain the amalgum of the defaults and
+#       the configuration file.
 my %CONFIG = load_config(@ARGV);
 
 # Announce how we were called
 if ( $ENV{'_'} eq $PROGRAM_NAME ) {
+
+    # ... called from the command-line
     debug( 'called as: %s %s', $PROGRAM_NAME, join q{ }, @ARGV );
 }
 else {
-    debug( '%s called: %s %s', $ENV{'_'}, $PROGRAM_NAME, join q{ }, @ARGV );
+    # ... called by sshd
+    # FIXME: it seems that $ENV{'_'} does not contain sshd as expected
+    debug( 'pid(%s) called: %s %s', getppid, $PROGRAM_NAME, join q{ }, @ARGV );
 }
 
 # Ensure the user is authorized for access to this host
 if ( user_authz( $CONFIG{'user'}, $CONFIG{'hostname'} ) ) {
+
+    # Find and return the ssh-rsa key
     user_authn( $CONFIG{'user'} );
 }
 
 exit 0;
+
+#------------------------------------------------------------------------------
 
 # expand_macros
 #   Expand any macros found in a string.
@@ -198,11 +211,12 @@ sub get_ocsp_uri {
     local $ENV{'PATH'} = q{};
     my ( $r, $w, $e );    # Create the read, write, and error handlers
     my $pid = open3( $w, $r, $e, $command );
-    printf {$w} "%s\n", $cert; # Send the certificate
+    printf {$w} "%s\n", $cert;    # Send the certificate
     waitpid $pid, 0;
-    my $ocsp_uri = <$r>;       # Read the result
-    $ocsp_uri =~ s/\n//smx;    # Strip the trailing newline
+    my $ocsp_uri = <$r>;          # Read the result
+    $ocsp_uri =~ s/\n//smx;       # Strip the trailing newline
 
+    # Untaint the OCSP URI and return it
     $ocsp_uri = untaint_url($ocsp_uri);
     return $ocsp_uri;
 }
@@ -251,13 +265,28 @@ sub verify_x509_key_usage {
     }
 
     my $extensions = $x509->extensions_by_name();
-#    foreach my $key ( keys $extensions ) {
-#        debug( 'found extension "%s"', $key );
-#    }
 
+    #    # Print out the key extensions that we have
+    #    # (we're looking for KeyUsage)
+    #    foreach my $key ( keys $extensions ) {
+    #        debug( 'found extension "%s"', $key );
+    #    }
+
+    # Verify the KeyUsage bits.  The possible options are:
+    #      'Digital Signature'
+    #      'Key Agreement'
+    #      'Non Repudiation'
+    #      'Key Encipherment'
+    #      'Data Encipherment'
+    #      'Decipher Only'
+    #      'Certificate Sign'
+    #      'Encipher Only'
+    #      'CRL Sign'
     if ( exists $extensions->{'keyUsage'} ) {
         my %keyusage = Crypt::OpenSSL::X509::Extension::hash_bit_string(
             $extensions->{'keyUsage'} );
+
+        # debug( '%s', Dumper( \%keyusage ) );
         foreach my $usage ( split /,/smx, $CONFIG{'x509_key_usage'} ) {
 
             # Remove leading and trailing whitespace
@@ -344,9 +373,9 @@ sub user_authn {
 
     # Search for the certificate
     debug( 'searching %s for certificates belonging to %s',
-        $options{'authn_ldap_uri'}, $username );
+        $CONFIG{'authn_ldap_uri'}, $username );
     my $ldap_msg = $ldap->search(
-        base      => $options{'authn_ldap_cert_basedn'},
+        base      => $CONFIG{'authn_ldap_cert_basedn'},
         filter    => $filter,
         attrs     => ['userCertificate'],
         sizelimit => 0,
@@ -355,105 +384,125 @@ sub user_authn {
     # Disconnect from the server
     ldap_disconnect($ldap);
 
-    # Process the results, if any
+    # ... did the search succeed?
     if ( $ldap_msg->code != 0 ) {
         error( 'search for %s failed: %s', $username, $ldap_msg->error() );
         return;
     }
 
+    # ... did we get any records?
     if ( $ldap_msg->count == 0 ) {
         debug( 'no record retrieved for %s', $username );
         return;
     }
 
+    # Iterate over the returned entries, looking
+    # for and processing any certificates.
     foreach my $entry ( $ldap_msg->entries ) {
         if ( $entry->exists('userCertificate;binary') ) {
-
-            # Get the certificate as a Crypt::OpenSSL::X509 object
-            my $x509 = Crypt::OpenSSL::X509->new_from_string(
-                $entry->get_value('userCertificate;binary'),
-                Crypt::OpenSSL::X509::FORMAT_ASN1
-            );
-
-            # Make sure the certificate is the correct type
-            if ( $CONFIG{'verify_x509_extensions'} == 1 ) {
-                if ( verify_x509_key_usage( $x509, $username ) == 0 ) {
-                    error(
-'insufficient keyUsage in certificate %s for %s, skipping',
-                        $x509->serial(), $username
-                    );
-                    next;
-                }
-            }
-            else {
-                debug('x509 extension verification disabled');
-            }
-
-            # Make sure the certificate is not expired
-            if ( $x509->checkend( $options{'expiry_offset'} ) == 1 ) {
-                error( 'certificate %s for %s is expired, skipping',
-                    $x509->serial(), $username );
-                next;
-            }
-            debug( 'certificate %s for %s is not expired',
-                $x509->serial(), $username );
-
-            # Get the OCSP URI if we don't already have it
-            if ( !defined $CONFIG{'ocsp_url'} || $CONFIG{'ocsp_url'} eq q{} ) {
-                my $ocsp_uri = get_ocsp_uri( $x509 );
-                $CONFIG{'ocsp_url'} = $ocsp_uri;
-                debug( 'certificate %s for %s has a ocsp_uri of %s',
-                    $x509->serial(), $username, $ocsp_uri );
-            }
-
-            # Validate the certificate using OCSP
-            if ( !is_valid_ocsp( $x509->serial() ) ) {
-                debug( 'cerficate %s for %s is not valid, skipping',
-                    $x509->serial(), $username );
-                next;
-            }
-            debug( 'cerficate %s for %s is valid', $x509->serial(), $username );
-
-            # Extract the public key from the user's certificate
-            debug( 'extracting public key from certificate %s for %s',
-                $x509->serial(), $username );
-            my $rsa_key =
-              Crypt::OpenSSL::RSA->new_public_key( $x509->pubkey() )
-              ->get_public_key_x509_string();
-
-            # For now, we must call out to ssh-keygen to convert the PEM
-            # public key to SSH authorized_keys format.
-            if ( defined $rsa_key && $rsa_key ne q{} ) {
-                local $ENV{'PATH'} = q{};
-                my ( $r, $w, $e );  # Create the read, write, and error handlers
-
-                # Convert the certificate to a ssh-rsa key
-                debug(
-'converting public key from certificate %s to ssh-rsa key for %s',
-                    $x509->serial(), $username
-                );
-                my $pid = open3( $w, $r, $e,
-                    '/usr/bin/ssh-keygen -i -m PKCS8 -f /dev/stdin' );
-                printf {$w} "%s\n", $rsa_key;    # Send the PEM public key
-                waitpid $pid, 0;                 # Wait for ssh-keygen to finish
-                my $ssh_key = <$r>;              # Read the resulting SSH key
-                $ssh_key =~ s/\s$//smx;          # Remove trailing whitespace
-
-                # If we have a SSH key then we'll assemble and print the
-                # authorized_keys line.
-                if ( defined $ssh_key && $ssh_key ne q{} ) {
-                    debug('adding SSH options and username to key');
-                    printf "%s%s %s\n",
-                      $CONFIG{'ssh_options'}, $ssh_key, $username;
-                }
-                else {
-                    error( 'unable to convert certificate %s for %s',
-                        $x509->serial(), $username );
-                }
-            }
+            process_cert( $entry->get_value('userCertificate;binary'),
+                $username );
         }
         else {
             debug( 'no certificate found for %s', $username );
+        }
+    }
+
+    return;
+}
+
+# process_cert
+#   Validate and convert a x509 certificate
+#   into a ssh-rsa key
+sub process_cert {
+    my ( $certificate, $username ) = @_;
+
+    # We must have been sent something
+    if ( !defined $certificate || !defined $username ) {
+        return;
+    }
+
+    # Get the certificate as a Crypt::OpenSSL::X509 object
+    my $x509 =
+      Crypt::OpenSSL::X509->new_from_string( $certificate,
+        Crypt::OpenSSL::X509::FORMAT_ASN1 );
+
+    # Make sure the certificate is not expired
+    if ( $x509->checkend( $CONFIG{'expiry_offset'} ) == 1 ) {
+        error( 'certificate %s for %s is expired, skipping',
+            $x509->serial(), $username );
+        next;
+    }
+    debug( 'certificate %s for %s is not expired', $x509->serial(), $username );
+
+    # Make sure the certificate is the correct type
+    if ( $CONFIG{'verify_x509_extensions'} == 1 ) {
+        if ( verify_x509_key_usage( $x509, $username ) == 0 ) {
+            error( 'insufficient keyUsage in certificate %s for %s, skipping',
+                $x509->serial(), $username );
+            next;
+        }
+    }
+    else {
+        debug('x509 extension verification disabled');
+    }
+
+    # Get the OCSP URI if we don't already have it
+    if ( !defined $CONFIG{'ocsp_url'} || $CONFIG{'ocsp_url'} eq q{} ) {
+        my $ocsp_uri = get_ocsp_uri($x509);
+        $CONFIG{'ocsp_url'} = $ocsp_uri;
+        debug( 'certificate %s for %s has a ocsp_uri of %s',
+            $x509->serial(), $username, $ocsp_uri );
+    }
+
+    # Validate the certificate using OCSP
+    if ( $CONFIG{'verify_ocsp'} == 1 ) {
+        if ( !is_valid_ocsp( $x509->serial() ) ) {
+            debug( 'cerficate %s for %s is not valid, skipping',
+                $x509->serial(), $username );
+            next;
+        }
+        debug( 'cerficate %s for %s is valid', $x509->serial(), $username );
+    }
+    else {
+        debug('ocsp verification disabled');
+    }
+
+    # Extract the public key from the user's certificate
+    debug( 'extracting public key from certificate %s for %s',
+        $x509->serial(), $username );
+    my $rsa_key =
+      Crypt::OpenSSL::RSA->new_public_key( $x509->pubkey() )
+      ->get_public_key_x509_string();
+
+    # For now, we must call out to ssh-keygen to convert the PEM
+    # public key to SSH authorized_keys format.
+    if ( defined $rsa_key && $rsa_key ne q{} ) {
+        local $ENV{'PATH'} = q{};
+        my ( $r, $w, $e );    # Create the read, write, and error handlers
+
+        # Convert the certificate to a ssh-rsa key
+        debug(
+            'converting public key from certificate %s to ssh-rsa key for %s',
+            $x509->serial(), $username );
+        my $pid =
+          open3( $w, $r, $e, '/usr/bin/ssh-keygen -i -m PKCS8 -f /dev/stdin' );
+        printf {$w} "%s\n", $rsa_key;    # Send the PEM public key
+        waitpid $pid, 0;                 # Wait for ssh-keygen to finish
+        my $ssh_key = <$r>;              # Read the resulting SSH key
+        $ssh_key =~ s/\s$//smx;          # Remove trailing whitespace
+
+        # If we have a SSH key then we'll assemble and print the
+        # authorized_keys line.
+        if ( defined $ssh_key && $ssh_key ne q{} ) {
+            debug('adding SSH options and username to key');
+            debug( 'Sending: %s%s %s',
+                $CONFIG{'ssh_options'}, $ssh_key, $username );
+            printf "%s%s %s\n", $CONFIG{'ssh_options'}, $ssh_key, $username;
+        }
+        else {
+            error( 'unable to convert certificate %s for %s',
+                $x509->serial(), $username );
         }
     }
 
@@ -643,11 +692,14 @@ sub load_config {
         exit 1;    # should never get here
     }
 
+    # Make sure that we have a base DN for searching users
     if ( $config{'authn_ldap_user_basedn'} eq $EMPTY_STRING ) {
         fatal( 'authn_ldap_user_basedn not specified in %s',
             $config{'config'} );
         exit 1;    # should never get here
     }
+
+    # Make sure that we have a base DN for searching certificates
     if ( $config{'authn_ldap_cert_basedn'} eq $EMPTY_STRING ) {
         fatal( 'authn_ldap_cert_basedn not specified in %s',
             $config{'config'} );
@@ -780,7 +832,7 @@ sub error {
     if ( $ENV{'_'} eq $PROGRAM_NAME ) {
         printf {*STDERR} 'error: ' . $fmt . "\n", @args;
     }
-    if ( $options{'use_syslog'} ) {
+    if ( $CONFIG{'use_syslog'} ) {
         do_syslog( 'error: ' . $fmt, @args );
     }
 
@@ -794,7 +846,7 @@ sub fatal {
     if ( $ENV{'_'} eq $PROGRAM_NAME ) {
         printf {*STDERR} 'fatal: ' . $fmt . "\n", @args;
     }
-    if ( $options{'use_syslog'} ) {
+    if ( $CONFIG{'use_syslog'} ) {
         do_syslog( 'fatal: ' . $fmt, @args );
     }
     closelog();
@@ -806,11 +858,11 @@ sub fatal {
 sub debug {
     my ( $fmt, @args ) = @_;
 
-    if ( $options{'debug'} ) {
+    if ( $CONFIG{'debug'} ) {
         if ( $ENV{'_'} eq $PROGRAM_NAME ) {
             printf {*STDERR} 'debug: ' . $fmt . "\n", @args;
         }
-        if ( $options{'use_syslog'} ) {
+        if ( $CONFIG{'use_syslog'} ) {
             do_syslog( 'debug: ' . $fmt, @args );
         }
     }

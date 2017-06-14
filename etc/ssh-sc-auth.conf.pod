@@ -147,6 +147,10 @@ Specify the extended key usage attributes, as a comma-delimited string, that mus
 
 =over 4
 
+=item B<verify_ocsp> [yes|no|true|false|1|0]
+
+Toggle the OCSP verification on/off.
+
 =item B<openssl> [path-to-openssl]
 
 Specify the path to the openssl binary.

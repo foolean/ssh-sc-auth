@@ -1,0 +1,21 @@
+# selinux policy for ssh-sc-auth
+
+# To compile and import the policy, run:
+#   checkmodule -M -m -o ssh-sc-auth.mod ssh-sc-auth.te
+#   semodule_package -o ssh-sc-auth.pp -m ssh-sc-auth.mod
+#   semodule -i ssh-sc-auth.pp
+
+module ssh-sc-auth 1.0;
+
+require {
+    type ssh_keygen_exec_t;
+    type ldap_port_t;
+    type sshd_t;
+    class tcp_socket name_connect;
+    class file { execute execute_no_trans open read };
+}
+
+#============= sshd_t ==============
+
+allow sshd_t ldap_port_t:tcp_socket name_connect;
+allow sshd_t ssh_keygen_exec_t:file { execute execute_no_trans open read };
