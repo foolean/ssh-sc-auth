@@ -153,6 +153,7 @@ my $build = $class->new(
         'Getopt::Long'          => 0,
         'IPC::Open3'            => 0,
         'Net::LDAPS'            => 0,
+        'Proc::ProcessTable'    => 0,
         'Scalar::Util'          => 0,
         'Sys::Hostname'         => 0,
         'Sys::Syslog'           => 0,

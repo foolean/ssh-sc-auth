@@ -36,6 +36,7 @@ use File::Basename;
 use Getopt::Long qw(GetOptionsFromArray);
 use IPC::Open3;
 use Net::LDAPS;
+use Proc::ProcessTable;
 use Scalar::Util qw(tainted);
 use Sys::Hostname;
 use Sys::Syslog;
@@ -109,8 +110,8 @@ if ( $ENV{'_'} eq $PROGRAM_NAME ) {
 }
 else {
     # ... called by sshd
-    # FIXME: it seems that $ENV{'_'} does not contain sshd as expected
-    debug( 'pid(%s) called: %s %s', getppid, $PROGRAM_NAME, join q{ }, @ARGV );
+    my $ppid = getppid;
+    debug( '%s[%s] called: %s %s', getpidname($ppid), $ppid, $PROGRAM_NAME, join q{ }, @ARGV );
 }
 
 # Ensure the user is authorized for access to this host
@@ -123,6 +124,21 @@ if ( user_authz( $CONFIG{'user'}, $CONFIG{'hostname'} ) ) {
 exit 0;
 
 #------------------------------------------------------------------------------
+
+# getpidname
+#   Return the name of the process matching a pid number
+sub getpidname {
+    my $pid = shift || return "missing_pid";
+
+   my $t = new Proc::ProcessTable;
+
+    foreach my $p (@{$t->table}) {
+        if ( $p->pid == $pid ) {
+            return sprintf "%s", $p->fname;
+        }
+    }
+    return sprintf "unknown_pid";
+}
 
 # expand_macros
 #   Expand any macros found in a string.
