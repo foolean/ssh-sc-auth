@@ -43,11 +43,6 @@ my $class = Module::Build->subclass( code => <<'EOF');
 
         # Call the parent install function
         $self->SUPER::ACTION_install;
-
-        my $sbin_files = $self->{'properties'}->{'sbin_files'};
-        while ( my ( $src, $dst ) = each %{$sbin_files} ) {
-            chmod 0640, $self->install_base() . '/' . $dst;
-        }
     }
 
     sub ACTION_uninstall {
@@ -63,6 +58,13 @@ my $class = Module::Build->subclass( code => <<'EOF');
         my $self = shift;
 
         if ( $self->invoked_action() eq 'install' ) {
+
+            my $files = $self->{'properties'}->{'sbin_files'};
+            while ( my ( $src, $dst ) = each %$files ) {
+                printf "Installing %s/%s\n", $self->install_base(), $dst;
+                File::Copy::copy( $self->base_dir() . '/' . $src, $self->install_base() . '/' . $dst);
+                chmod 0750, $self->install_base() . '/' . $dst;
+            }
 
             # Search for POD and create man1 pages
             use Pod::Man;
