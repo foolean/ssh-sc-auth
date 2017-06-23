@@ -44,6 +44,10 @@ use Sys::Syslog;
 # Our program name and version
 our $VERSION = '1.0.0';
 our $PROGRAM = basename(__FILE__);
+our $ENVNAME  = $ENV{'_'};
+if ( $ENVNAME ne q{} ) {
+    $ENVNAME = basename($ENVNAME);
+}
 
 # Miscellaneous variables and flags
 my $EMPTY_STRING = q{};    # Empty string macro for readability
@@ -103,15 +107,15 @@ my @arg_specs = qw(
 my %CONFIG = load_config(@ARGV);
 
 # Announce how we were called
-if ( $ENV{'_'} eq $PROGRAM_NAME ) {
+if ( $ENVNAME eq $PROGRAM ) {
 
     # ... called from the command-line
-    debug( 'called as: %s %s', $PROGRAM_NAME, join q{ }, @ARGV );
+    debug( 'called as: %s %s', $PROGRAM, join q{ }, @ARGV );
 }
 else {
     # ... called by sshd
     my $ppid = getppid;
-    debug( '%s[%s] called: %s %s', getpidname($ppid), $ppid, $PROGRAM_NAME, join q{ }, @ARGV );
+    debug( '%s[%s] called: %s %s', getpidname($ppid), $ppid, $PROGRAM, join q{ }, @ARGV );
 }
 
 # Ensure the user is authorized for access to this host
@@ -828,16 +832,14 @@ sub untaint_uri {
     return $uri;
 }
 
-# do_syslog($fmt, @args) - Handle the actual writing to syslog
-sub do_syslog {
+
+# debug($fmt, @args) - Debug output handler
+sub debug {
     my ( $fmt, @args ) = @_;
 
-    if ( $SYSLOG_OPEN == 0 ) {
-        openlog( $PROGRAM, 'pid', 'user' );
-        $SYSLOG_OPEN = 1;
+    if ( $CONFIG{'debug'} ) {
+        logprint( 'debug: ' . $fmt, @args );
     }
-    syslog( 'info', $fmt, @args );
-
     return;
 }
 
@@ -845,13 +847,7 @@ sub do_syslog {
 sub error {
     my ( $fmt, @args ) = @_;
 
-    if ( $ENV{'_'} eq $PROGRAM_NAME ) {
-        printf {*STDERR} 'error: ' . $fmt . "\n", @args;
-    }
-    if ( $CONFIG{'use_syslog'} ) {
-        do_syslog( 'error: ' . $fmt, @args );
-    }
-
+    logprint( 'error: ' . $fmt, @args );
     return;
 }
 
@@ -859,41 +855,33 @@ sub error {
 sub fatal {
     my ( $fmt, @args ) = @_;
 
-    if ( $ENV{'_'} eq $PROGRAM_NAME ) {
-        printf {*STDERR} 'fatal: ' . $fmt . "\n", @args;
-    }
-    if ( $CONFIG{'use_syslog'} ) {
-        do_syslog( 'fatal: ' . $fmt, @args );
-    }
+    logprint( 'fatal: ' . $fmt, @args );
     closelog();
-
     exit 1;
 }
 
-# debug($fmt, @args) - Debug output handler
-sub debug {
+# logprint($fmt, @args) - Handle the actual writing to STDERR and syslog
+sub logprint {
     my ( $fmt, @args ) = @_;
 
-    if ( $CONFIG{'debug'} ) {
-        if ( $ENV{'_'} eq $PROGRAM_NAME ) {
-            printf {*STDERR} 'debug: ' . $fmt . "\n", @args;
+    # Output to stderr if we're running interactively
+    if ( $ENVNAME eq $PROGRAM ) {
+        printf {*STDERR} $fmt . "\n", @args;
+    }
+
+    # Log to syslog if requested
+    if ( $CONFIG{'use_syslog'} ) {
+        if ( $SYSLOG_OPEN == 0 ) {
+            openlog( $PROGRAM, 'pid', 'user' );
+            $SYSLOG_OPEN = 1;
         }
-        if ( $CONFIG{'use_syslog'} ) {
-            do_syslog( 'debug: ' . $fmt, @args );
-        }
+        syslog( 'info', $fmt, @args );
     }
 
     return;
 }
 
-# version - Standard version routine
-sub version {
-
-    printf "%s v%s\n", $PROGRAM, $VERSION;
-    return;
-}
-
-# usage - Standard usage routine
+# usage() - Standard usage routine
 sub usage {
 
     version();
@@ -905,6 +893,13 @@ sub usage {
     printf "       --hostname      - specify the hostname (for debugging)\n";
     printf "   -v, --version       - print version information\n";
     exit 1;
+}
+
+# version() - Standard version routine
+sub version {
+
+    printf "%s v%s\n", $PROGRAM, $VERSION;
+    return;
 }
 
 __END__
