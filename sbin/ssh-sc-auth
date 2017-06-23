@@ -696,9 +696,8 @@ sub load_config {
     if ( defined $ARGV[0] ) {
         $config{'user'} = $ARGV[0];
     }
-
-    # We must have a username
-    if ( $config{'user'} eq q{} ) {
+    else {
+        # We must have a username
         fatal('must supply a username');
         exit 1;    # should never get here
     }
@@ -787,10 +786,12 @@ sub untaint_path {
 
 # untaint_username(USERNAME) - untaint a username (minimal POSIX)
 sub untaint_username {
-    my $username = shift || return;
+    my $username = shift;
 
     ## no critic(ProhibitEnumeratedClasses)
-    if ( $username =~ /^(\p{IsLower}[a-z0-9\-]*)$/smx ) {
+    if (   ( $username =~ /^(\p{IsLower}[a-z0-9\-]*)$/smx )
+        && ( $username ne q{} ) )
+    {
         ## use critic
         return $1;
     }
