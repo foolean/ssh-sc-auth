@@ -30,6 +30,7 @@ use warnings 'all';
 use Config::General qw(ParseConfig);
 use Crypt::OpenSSL::RSA;
 use Crypt::OpenSSL::X509;
+use Cwd qw(abs_path);
 use Data::Dumper;
 use English qw(-no_match_vars);
 use File::Basename;
@@ -44,7 +45,7 @@ use Sys::Syslog;
 # Our program name and version
 our $VERSION = '1.0.0';
 our $PROGRAM = basename(__FILE__);
-our $ENVNAME  = $ENV{'_'};
+our $ENVNAME = $ENV{'_'};
 if ( $ENVNAME ne q{} ) {
     $ENVNAME = basename($ENVNAME);
 }
@@ -110,12 +111,13 @@ my %CONFIG = load_config(@ARGV);
 if ( $ENVNAME eq $PROGRAM ) {
 
     # ... called from the command-line
-    debug( 'called as: %s %s', $PROGRAM, join q{ }, @ARGV );
+    debug( 'called as: %s %s', abs_path(__FILE__), join q{ }, @ARGV );
 }
 else {
     # ... called by sshd
     my $ppid = getppid;
-    debug( '%s[%s] called: %s %s', getpidname($ppid), $ppid, $PROGRAM, join q{ }, @ARGV );
+    debug( '%s[%s] called: %s %s',
+        getpidname($ppid), $ppid, abs_path(__FILE__), join q{ }, @ARGV );
 }
 
 # Ensure the user is authorized for access to this host
@@ -132,16 +134,16 @@ exit 0;
 # getpidname
 #   Return the name of the process matching a pid number
 sub getpidname {
-    my $pid = shift || return "missing_pid";
+    my $pid = shift || return 'missing_pid';
 
-   my $t = new Proc::ProcessTable;
+    my $t = Proc::ProcessTable->new();
 
-    foreach my $p (@{$t->table}) {
+    foreach my $p ( @{ $t->table } ) {
         if ( $p->pid == $pid ) {
-            return sprintf "%s", $p->fname;
+            return sprintf '%s', $p->fname;
         }
     }
-    return sprintf "unknown_pid";
+    return sprintf 'unknown_pid';
 }
 
 # expand_macros
@@ -831,7 +833,6 @@ sub untaint_uri {
     # Should never get here
     return $uri;
 }
-
 
 # debug($fmt, @args) - Debug output handler
 sub debug {
