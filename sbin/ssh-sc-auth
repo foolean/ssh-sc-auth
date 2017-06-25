@@ -121,101 +121,144 @@ else {
 }
 
 # Ensure the user is authorized for access to this host
-if ( user_authz( $CONFIG{'user'}, $CONFIG{'hostname'} ) ) {
+if ( sc_authz( $CONFIG{'user'}, $CONFIG{'hostname'} ) ) {
 
     # Find and return the ssh-rsa key
-    user_authn( $CONFIG{'user'} );
+    sc_authn( $CONFIG{'user'} );
 }
 
 exit 0;
 
 #------------------------------------------------------------------------------
 
-# getpidname
-#   Return the name of the process matching a pid number
-sub getpidname {
-    my $pid = shift || return 'missing_pid';
+# sc_authn
+#   Generate the ssh-rsa keys for any certs belonging to the user
+sub sc_authn {
+    my $username = shift || return;
 
-    my $t = Proc::ProcessTable->new();
+    # Connect to the remote server
+    my $ldap = ldap_connect(
+        $CONFIG{'authn_ldap_uri'},    $CONFIG{'authn_ldap_binddn'},
+        $CONFIG{'authn_ldap_bindpw'}, $CONFIG{'authn_ldap_capath'},
+        $CONFIG{'authn_ldap_cafile'}, $CONFIG{'authn_ldap_verify'},
+        $CONFIG{'authn_ldap_timeout'},
+    );
+    if ( !defined $ldap ) {
+        fatal( 'unable to connect to %s', $CONFIG{'authn_ldap_uri'} );
+    }
 
-    foreach my $p ( @{ $t->table } ) {
-        if ( $p->pid == $pid ) {
-            return sprintf '%s', $p->fname;
+    # Ensure the user's account is active
+    if ( !is_active( $ldap, $username ) ) {
+        debug( '%s is not active', $username );
+        return;
+    }
+    debug( '%s is active', $username );
+
+    my $filter = expand_macros( $CONFIG{'authn_ldap_cert_filter'} );
+    debug( 'expanded filter is "%s"', $filter );
+
+    # Search for the certificate
+    debug( 'searching %s for certificates belonging to %s',
+        $CONFIG{'authn_ldap_uri'}, $username );
+    my $ldap_msg = $ldap->search(
+        base      => $CONFIG{'authn_ldap_cert_basedn'},
+        filter    => $filter,
+        attrs     => ['userCertificate'],
+        sizelimit => 0,
+    );
+
+    # Disconnect from the server
+    ldap_disconnect($ldap);
+
+    # ... did the search succeed?
+    if ( $ldap_msg->code != 0 ) {
+        error( 'search for %s failed: %s', $username, $ldap_msg->error() );
+        return;
+    }
+
+    # ... did we get any records?
+    if ( $ldap_msg->count == 0 ) {
+        debug( 'no record retrieved for %s', $username );
+        return;
+    }
+
+    # Iterate over the returned entries, looking
+    # for and processing any certificates.
+    foreach my $entry ( $ldap_msg->entries ) {
+        if ( $entry->exists('userCertificate;binary') ) {
+            process_cert( $entry->get_value('userCertificate;binary'),
+                $username );
+        }
+        else {
+            debug( 'no certificate found for %s', $username );
         }
     }
-    return sprintf 'unknown_pid';
+
+    return;
 }
 
-# expand_macros
-#   Expand any macros found in a string.
-#   Current macros are:
-#       %u = username
-#       %h = hostname
-#       %d = datestamp
-sub expand_macros {
-    my $string = shift || return;
+# sc_authz
+#   Verify that the user is authorized for access
+sub sc_authz {
+    my ( $username, $hostname ) = @_;
 
-    ## no critic(ProhibitMagicNumbers)
-    my ( $day, $month, $year ) = (localtime)[ 3, 4, 5 ];
-    my $datestamp = sprintf '%04i%02i%02i000000Z',
-      ( $year + 1900 ), ( $month + 1 ), $day;
-    ## use critic
-
-    my $hostname = $CONFIG{'hostname'};
-    my $username = $CONFIG{'user'};
-
-    # Expand the macros (need proper handling for %%)
-    $string =~ s/%h/$hostname/smxg;
-    $string =~ s/%u/$username/smxg;
-    $string =~ s/%d/$datestamp/smxg;
-
-    return $string;
-}
-
-# is_valid_ocsp
-#   Validate a certificate using OCSP
-sub is_valid_ocsp {
-    my $serial = shift || return 0;
-
-    # ocsp validation can be disabled by not having a URL
-    if ( !defined $CONFIG{'ocsp_url'} || $CONFIG{'ocsp_url'} eq q{} ) {
-        debug('ocsp url not set, skipping certificate validation');
+    # No URI means the user is authorized by default
+    if ( !defined $CONFIG{'authz_ldap_uri'}
+        || $CONFIG{'authz_ldap_uri'} eq $EMPTY_STRING )
+    {
+        debug('no authz uri, skipping authorization');
+        debug( '%s is authorized for access to %s', $username, $hostname );
         return 1;
     }
 
-    # ocsp validation can be disabled by not having an issuer
-    if ( !defined $CONFIG{'ocsp_issuer'} || $CONFIG{'ocsp_issuer'} eq q{} ) {
-        debug('ocsp issuer not set, skipping certificate validation');
-        return 1;
+    # Connect to the remote server
+    my $ldap = ldap_connect(
+        $CONFIG{'authz_ldap_uri'},    $CONFIG{'authz_ldap_binddn'},
+        $CONFIG{'authz_ldap_bindpw'}, $CONFIG{'authz_ldap_capath'},
+        $CONFIG{'authz_ldap_cafile'}, $CONFIG{'authz_ldap_verify'},
+        $CONFIG{'authz_ldap_timeout'},
+    );
+    if ( !defined $ldap ) {
+        fatal( 'unable to connect to %s', $CONFIG{'authz_ldap_uri'} );
     }
 
-    # ocsp validation can be disabled by not having a CA file
-    if ( !defined $CONFIG{'ocsp_cafile'} || $CONFIG{'ocsp_cafile'} eq q{} ) {
-        debug('ocsp cafile not set, skipping certificate validation');
-        return 1;
+    my $filter = expand_macros( $CONFIG{'authz_ldap_filter'} );
+    debug( 'expanded filter is "%s"', $filter );
+
+    # Search for the user and the host atribute, including the wildcard
+    # attribute of '*'.  We only need to determine if a record exists so
+    # all we need LDAP to return is the matching DN.
+    debug(
+        'searching %s for uid=%s, host=%s',
+        $CONFIG{'authz_ldap_uri'},
+        $username, $hostname
+    );
+    my $ldap_msg = $ldap->search(
+        base      => $CONFIG{'authz_ldap_basedn'},
+        filter    => $filter,
+        attrs     => ['dn'],
+        sizelimit => 0,
+    );
+
+    # Disconnect from the server
+    ldap_disconnect($ldap);
+
+    # A search failure will also mean the user is not authorized
+    if ( $ldap_msg->code != 0 ) {
+        error( 'search for uid=%s, host=%s failed: %s',
+            $username, $hostname, $ldap_msg->error() );
+        return 0;
     }
 
-    # Assemble the OCSP validation command (openssl)
-    my $command =
-      sprintf
-      '"%s" ocsp -issuer "%s" -no_nonce -CAfile "%s" -url "%s" -serial "0x%s"',
-      $CONFIG{'openssl'}, $CONFIG{'ocsp_issuer'}, $CONFIG{'ocsp_cafile'},
-      $CONFIG{'ocsp_url'}, $serial;
-
-    # Call out to openssl to perform the OCSP validation
-    local $ENV{'PATH'} = q{};
-    my ( $r, $w, $e );    # Create the read, write, and error handlers
-    my $pid = open3( $w, $r, $e, $command );
-    waitpid $pid, 0;
-    my $ocsp_result = <$r>;       # Read the result from the OCSP server
-    $ocsp_result =~ s/\n//smx;    # Strip the trailing newline
-
-    # Parse the result
-    debug( 'ocsp result for certificate %s is "%s"', $serial, $ocsp_result );
-    if ( $ocsp_result eq 'Response verify OK' ) {
-        return 1;
+    # Zero entries returned means the user does not have access to this host
+    if ( $ldap_msg->count == 0 ) {
+        debug( '%s is not authorized for access to %s', $username, $hostname );
+        return 0;
     }
-    return 0;
+
+    # ... successfully authorized
+    debug( '%s is authorized for access to %s', $username, $hostname );
+    return 1;
 }
 
 # get_ocsp_uri
@@ -277,9 +320,155 @@ sub is_active {
 
 }
 
-# verify_x509_key_usage
+# process_cert
+#   Validate and convert a x509 certificate
+#   into a ssh-rsa key
+sub process_cert {
+    my ( $certificate, $username ) = @_;
+
+    # We must have been sent something
+    if ( !defined $certificate || !defined $username ) {
+        return;
+    }
+
+    # Get the certificate as a Crypt::OpenSSL::X509 object
+    my $x509 =
+      Crypt::OpenSSL::X509->new_from_string( $certificate,
+        Crypt::OpenSSL::X509::FORMAT_ASN1 );
+
+    # Make sure the certificate is not expired
+    if ( $x509->checkend( $CONFIG{'expiry_offset'} ) == 1 ) {
+        error( 'certificate %s for %s is expired, skipping',
+            $x509->serial(), $username );
+        next;
+    }
+    debug( 'certificate %s for %s is not expired', $x509->serial(), $username );
+
+    # Make sure the certificate is the correct type
+    if ( $CONFIG{'verify_x509_extensions'} == 1 ) {
+        if ( verify_x509( $x509, $username ) == 0 ) {
+            error( 'insufficient keyUsage in certificate %s for %s, skipping',
+                $x509->serial(), $username );
+            next;
+        }
+    }
+    else {
+        debug('x509 extension verification disabled');
+    }
+
+    # Get the OCSP URI if we don't already have it
+    if ( !defined $CONFIG{'ocsp_url'} || $CONFIG{'ocsp_url'} eq q{} ) {
+        my $ocsp_uri = get_ocsp_uri($x509);
+        $CONFIG{'ocsp_url'} = $ocsp_uri;
+        debug( 'certificate %s for %s has a ocsp_uri of %s',
+            $x509->serial(), $username, $ocsp_uri );
+    }
+
+    # Validate the certificate using OCSP
+    if ( $CONFIG{'verify_ocsp'} == 1 ) {
+        if ( !verify_ocsp( $x509->serial() ) ) {
+            debug( 'cerficate %s for %s is not valid, skipping',
+                $x509->serial(), $username );
+            next;
+        }
+        debug( 'cerficate %s for %s is valid', $x509->serial(), $username );
+    }
+    else {
+        debug('ocsp verification disabled');
+    }
+
+    # Extract the public key from the user's certificate
+    debug( 'extracting public key from certificate %s for %s',
+        $x509->serial(), $username );
+    my $rsa_key =
+      Crypt::OpenSSL::RSA->new_public_key( $x509->pubkey() )
+      ->get_public_key_x509_string();
+
+    # For now, we must call out to ssh-keygen to convert the PEM
+    # public key to SSH authorized_keys format.
+    if ( defined $rsa_key && $rsa_key ne q{} ) {
+        local $ENV{'PATH'} = q{};
+        my ( $r, $w, $e );    # Create the read, write, and error handlers
+
+        # Convert the certificate to a ssh-rsa key
+        debug(
+            'converting public key from certificate %s to ssh-rsa key for %s',
+            $x509->serial(), $username );
+        my $pid =
+          open3( $w, $r, $e, '/usr/bin/ssh-keygen -i -m PKCS8 -f /dev/stdin' );
+        printf {$w} "%s\n", $rsa_key;    # Send the PEM public key
+        waitpid $pid, 0;                 # Wait for ssh-keygen to finish
+        my $ssh_key = <$r>;              # Read the resulting SSH key
+        $ssh_key =~ s/\s$//smx;          # Remove trailing whitespace
+
+        # If we have a SSH key then we'll assemble and print the
+        # authorized_keys line.
+        if ( defined $ssh_key && $ssh_key ne q{} ) {
+            debug('adding SSH options and username to key');
+            debug( 'Sending: %s%s %s',
+                $CONFIG{'ssh_options'}, $ssh_key, $username );
+            printf "%s%s %s\n", $CONFIG{'ssh_options'}, $ssh_key, $username;
+        }
+        else {
+            error( 'unable to convert certificate %s for %s',
+                $x509->serial(), $username );
+        }
+    }
+
+    return;
+}
+
+# ldap_connect
+#   Connect to a remote LDAP server
+# verify_ocsp
+#   Validate a certificate using OCSP
+sub verify_ocsp {
+    my $serial = shift || return 0;
+
+    # ocsp validation can be disabled by not having a URL
+    if ( !defined $CONFIG{'ocsp_url'} || $CONFIG{'ocsp_url'} eq q{} ) {
+        debug('ocsp url not set, skipping certificate validation');
+        return 1;
+    }
+
+    # ocsp validation can be disabled by not having an issuer
+    if ( !defined $CONFIG{'ocsp_issuer'} || $CONFIG{'ocsp_issuer'} eq q{} ) {
+        debug('ocsp issuer not set, skipping certificate validation');
+        return 1;
+    }
+
+    # ocsp validation can be disabled by not having a CA file
+    if ( !defined $CONFIG{'ocsp_cafile'} || $CONFIG{'ocsp_cafile'} eq q{} ) {
+        debug('ocsp cafile not set, skipping certificate validation');
+        return 1;
+    }
+
+    # Assemble the OCSP validation command (openssl)
+    my $command =
+      sprintf
+      '"%s" ocsp -issuer "%s" -no_nonce -CAfile "%s" -url "%s" -serial "0x%s"',
+      $CONFIG{'openssl'}, $CONFIG{'ocsp_issuer'}, $CONFIG{'ocsp_cafile'},
+      $CONFIG{'ocsp_url'}, $serial;
+
+    # Call out to openssl to perform the OCSP validation
+    local $ENV{'PATH'} = q{};
+    my ( $r, $w, $e );    # Create the read, write, and error handlers
+    my $pid = open3( $w, $r, $e, $command );
+    waitpid $pid, 0;
+    my $ocsp_result = <$r>;       # Read the result from the OCSP server
+    $ocsp_result =~ s/\n//smx;    # Strip the trailing newline
+
+    # Parse the result
+    debug( 'ocsp result for certificate %s is "%s"', $serial, $ocsp_result );
+    if ( $ocsp_result eq 'Response verify OK' ) {
+        return 1;
+    }
+    return 0;
+}
+
+# verify_x509
 #    verify the x509 keyUsage bits of a certificate
-sub verify_x509_key_usage {
+sub verify_x509 {
     my ( $x509, $username ) = @_;
 
     if ( !defined $x509 || !defined $username ) {
@@ -367,236 +556,6 @@ sub verify_x509_key_usage {
     return 1;
 }
 
-# user_authn
-#   Generate the ssh-rsa keys for any certs belonging to the user
-sub user_authn {
-    my $username = shift || return;
-
-    # Connect to the remote server
-    my $ldap = ldap_connect(
-        $CONFIG{'authn_ldap_uri'},    $CONFIG{'authn_ldap_binddn'},
-        $CONFIG{'authn_ldap_bindpw'}, $CONFIG{'authn_ldap_capath'},
-        $CONFIG{'authn_ldap_cafile'}, $CONFIG{'authn_ldap_verify'},
-        $CONFIG{'authn_ldap_timeout'},
-    );
-    if ( !defined $ldap ) {
-        fatal( 'unable to connect to %s', $CONFIG{'authn_ldap_uri'} );
-    }
-
-    # Ensure the user's account is active
-    if ( !is_active( $ldap, $username ) ) {
-        debug( '%s is not active', $username );
-        return;
-    }
-    debug( '%s is active', $username );
-
-    my $filter = expand_macros( $CONFIG{'authn_ldap_cert_filter'} );
-    debug( 'expanded filter is "%s"', $filter );
-
-    # Search for the certificate
-    debug( 'searching %s for certificates belonging to %s',
-        $CONFIG{'authn_ldap_uri'}, $username );
-    my $ldap_msg = $ldap->search(
-        base      => $CONFIG{'authn_ldap_cert_basedn'},
-        filter    => $filter,
-        attrs     => ['userCertificate'],
-        sizelimit => 0,
-    );
-
-    # Disconnect from the server
-    ldap_disconnect($ldap);
-
-    # ... did the search succeed?
-    if ( $ldap_msg->code != 0 ) {
-        error( 'search for %s failed: %s', $username, $ldap_msg->error() );
-        return;
-    }
-
-    # ... did we get any records?
-    if ( $ldap_msg->count == 0 ) {
-        debug( 'no record retrieved for %s', $username );
-        return;
-    }
-
-    # Iterate over the returned entries, looking
-    # for and processing any certificates.
-    foreach my $entry ( $ldap_msg->entries ) {
-        if ( $entry->exists('userCertificate;binary') ) {
-            process_cert( $entry->get_value('userCertificate;binary'),
-                $username );
-        }
-        else {
-            debug( 'no certificate found for %s', $username );
-        }
-    }
-
-    return;
-}
-
-# process_cert
-#   Validate and convert a x509 certificate
-#   into a ssh-rsa key
-sub process_cert {
-    my ( $certificate, $username ) = @_;
-
-    # We must have been sent something
-    if ( !defined $certificate || !defined $username ) {
-        return;
-    }
-
-    # Get the certificate as a Crypt::OpenSSL::X509 object
-    my $x509 =
-      Crypt::OpenSSL::X509->new_from_string( $certificate,
-        Crypt::OpenSSL::X509::FORMAT_ASN1 );
-
-    # Make sure the certificate is not expired
-    if ( $x509->checkend( $CONFIG{'expiry_offset'} ) == 1 ) {
-        error( 'certificate %s for %s is expired, skipping',
-            $x509->serial(), $username );
-        next;
-    }
-    debug( 'certificate %s for %s is not expired', $x509->serial(), $username );
-
-    # Make sure the certificate is the correct type
-    if ( $CONFIG{'verify_x509_extensions'} == 1 ) {
-        if ( verify_x509_key_usage( $x509, $username ) == 0 ) {
-            error( 'insufficient keyUsage in certificate %s for %s, skipping',
-                $x509->serial(), $username );
-            next;
-        }
-    }
-    else {
-        debug('x509 extension verification disabled');
-    }
-
-    # Get the OCSP URI if we don't already have it
-    if ( !defined $CONFIG{'ocsp_url'} || $CONFIG{'ocsp_url'} eq q{} ) {
-        my $ocsp_uri = get_ocsp_uri($x509);
-        $CONFIG{'ocsp_url'} = $ocsp_uri;
-        debug( 'certificate %s for %s has a ocsp_uri of %s',
-            $x509->serial(), $username, $ocsp_uri );
-    }
-
-    # Validate the certificate using OCSP
-    if ( $CONFIG{'verify_ocsp'} == 1 ) {
-        if ( !is_valid_ocsp( $x509->serial() ) ) {
-            debug( 'cerficate %s for %s is not valid, skipping',
-                $x509->serial(), $username );
-            next;
-        }
-        debug( 'cerficate %s for %s is valid', $x509->serial(), $username );
-    }
-    else {
-        debug('ocsp verification disabled');
-    }
-
-    # Extract the public key from the user's certificate
-    debug( 'extracting public key from certificate %s for %s',
-        $x509->serial(), $username );
-    my $rsa_key =
-      Crypt::OpenSSL::RSA->new_public_key( $x509->pubkey() )
-      ->get_public_key_x509_string();
-
-    # For now, we must call out to ssh-keygen to convert the PEM
-    # public key to SSH authorized_keys format.
-    if ( defined $rsa_key && $rsa_key ne q{} ) {
-        local $ENV{'PATH'} = q{};
-        my ( $r, $w, $e );    # Create the read, write, and error handlers
-
-        # Convert the certificate to a ssh-rsa key
-        debug(
-            'converting public key from certificate %s to ssh-rsa key for %s',
-            $x509->serial(), $username );
-        my $pid =
-          open3( $w, $r, $e, '/usr/bin/ssh-keygen -i -m PKCS8 -f /dev/stdin' );
-        printf {$w} "%s\n", $rsa_key;    # Send the PEM public key
-        waitpid $pid, 0;                 # Wait for ssh-keygen to finish
-        my $ssh_key = <$r>;              # Read the resulting SSH key
-        $ssh_key =~ s/\s$//smx;          # Remove trailing whitespace
-
-        # If we have a SSH key then we'll assemble and print the
-        # authorized_keys line.
-        if ( defined $ssh_key && $ssh_key ne q{} ) {
-            debug('adding SSH options and username to key');
-            debug( 'Sending: %s%s %s',
-                $CONFIG{'ssh_options'}, $ssh_key, $username );
-            printf "%s%s %s\n", $CONFIG{'ssh_options'}, $ssh_key, $username;
-        }
-        else {
-            error( 'unable to convert certificate %s for %s',
-                $x509->serial(), $username );
-        }
-    }
-
-    return;
-}
-
-# user_authz
-#   Verify that the user is authorized for access
-sub user_authz {
-    my ( $username, $hostname ) = @_;
-
-    # No URI means the user is authorized by default
-    if ( !defined $CONFIG{'authz_ldap_uri'}
-        || $CONFIG{'authz_ldap_uri'} eq $EMPTY_STRING )
-    {
-        debug('no authz uri, skipping authorization');
-        debug( '%s is authorized for access to %s', $username, $hostname );
-        return 1;
-    }
-
-    # Connect to the remote server
-    my $ldap = ldap_connect(
-        $CONFIG{'authz_ldap_uri'},    $CONFIG{'authz_ldap_binddn'},
-        $CONFIG{'authz_ldap_bindpw'}, $CONFIG{'authz_ldap_capath'},
-        $CONFIG{'authz_ldap_cafile'}, $CONFIG{'authz_ldap_verify'},
-        $CONFIG{'authz_ldap_timeout'},
-    );
-    if ( !defined $ldap ) {
-        fatal( 'unable to connect to %s', $CONFIG{'authz_ldap_uri'} );
-    }
-
-    my $filter = expand_macros( $CONFIG{'authz_ldap_filter'} );
-    debug( 'expanded filter is "%s"', $filter );
-
-    # Search for the user and the host atribute, including the wildcard
-    # attribute of '*'.  We only need to determine if a record exists so
-    # all we need LDAP to return is the matching DN.
-    debug(
-        'searching %s for uid=%s, host=%s',
-        $CONFIG{'authz_ldap_uri'},
-        $username, $hostname
-    );
-    my $ldap_msg = $ldap->search(
-        base      => $CONFIG{'authz_ldap_basedn'},
-        filter    => $filter,
-        attrs     => ['dn'],
-        sizelimit => 0,
-    );
-
-    # Disconnect from the server
-    ldap_disconnect($ldap);
-
-    # A search failure will also mean the user is not authorized
-    if ( $ldap_msg->code != 0 ) {
-        error( 'search for uid=%s, host=%s failed: %s',
-            $username, $hostname, $ldap_msg->error() );
-        return 0;
-    }
-
-    # Zero entries returned means the user does not have access to this host
-    if ( $ldap_msg->count == 0 ) {
-        debug( '%s is not authorized for access to %s', $username, $hostname );
-        return 0;
-    }
-
-    # ... successfully authorized
-    debug( '%s is authorized for access to %s', $username, $hostname );
-    return 1;
-}
-
-# ldap_connect
-#   Connect to a remote LDAP server
 ## no critic(ProhibitManyArgs)
 sub ldap_connect {
     my ( $uri, $binddn, $bindpw, $capath, $cafile, $verify, $timeout ) = @_;
@@ -652,6 +611,47 @@ sub ldap_disconnect {
     }
 
     return;
+}
+
+# getpidname
+#   Return the name of the process matching a pid number
+sub getpidname {
+    my $pid = shift || return 'missing_pid';
+
+    my $t = Proc::ProcessTable->new();
+
+    foreach my $p ( @{ $t->table } ) {
+        if ( $p->pid == $pid ) {
+            return sprintf '%s', $p->fname;
+        }
+    }
+    return sprintf 'unknown_pid';
+}
+
+# expand_macros
+#   Expand any macros found in a string.
+#   Current macros are:
+#       %u = username
+#       %h = hostname
+#       %d = datestamp
+sub expand_macros {
+    my $string = shift || return;
+
+    ## no critic(ProhibitMagicNumbers)
+    my ( $day, $month, $year ) = (localtime)[ 3, 4, 5 ];
+    my $datestamp = sprintf '%04i%02i%02i000000Z',
+      ( $year + 1900 ), ( $month + 1 ), $day;
+    ## use critic
+
+    my $hostname = $CONFIG{'hostname'};
+    my $username = $CONFIG{'user'};
+
+    # Expand the macros (need proper handling for %%)
+    $string =~ s/%h/$hostname/smxg;
+    $string =~ s/%u/$username/smxg;
+    $string =~ s/%d/$datestamp/smxg;
+
+    return $string;
 }
 
 # load_config
