@@ -38,21 +38,13 @@ The list of SSH authorized_keys options to add to the entry being returned.  For
 
 Specify the LDAP URI to the authentication server.
 
-=item B<authn_ldap_cert_basedn> [certbasedn]
+=item B<authn_ldap_basedn> [basedn]
 
-Specify the base DN used to locate the user's certificate.  In some environments the certificate and the user's account entry may reside in different branches in the LDAP server.
+Specify the base DN used to locate the user's account.
 
-=item B<authn_ldap_cert_filter> [certfilter]
+=item B<authn_ldap_filter> [filter]
 
-Specify the search filter used to locate the user's certificate.  In some environments the certificate and the user's account entry may reside in different branches in the LDAP server.
-
-=item B<authn_ldap_user_basedn> [userbasedn]
-
-Specify the base DN used to locate the user's account.  In some environments the certificate and the user's account entry may reside in different branches in the LDAP server.
-
-=item B<authn_ldap_user_filter> [userfilter]
-
-Specify the search filter used to locate the user's account.  In some environments the certificate and the user's account entry may reside in different branches in the LDAP server.
+Specify the search filter used to locate the user's account.
 
 =item B<authn_ldap_cafile> [cacertfile]
 
@@ -66,13 +58,57 @@ Specify how to verify the authentication server's certificate.
 
 Specify the timeout, in seconds, to use when connecting to the authentication server.
 
-=item B<authn_ldap_bindpw> [binddn] 
+=item B<authn_ldap_bindpw> [binddn]
 
 Specify the DN to use for credentialed access to the authentication server.
 
 =item B<authn_ldap_binddn> [bindpw]
 
 Specify the password to use for credentialed access to the authentication server.
+
+=back
+
+=item ALTERNATE AUTHENTICATION
+
+In some environments, certificates and/or ssh public keys might be stored in a
+different LDAP directory than the canonical accounts.
+
+=over 4
+
+=item B<alt_authn_ldap_uri> [uri]
+
+Specify the LDAP URI to the alternate authentication server.
+
+=item B<alt_authn_ldap_basedn> [basedn]
+
+Specify the base DN used to locate the user's account.
+
+=item B<alt_authn_ldap_filter> [filter]
+
+Specify the search filter used to locate the user's account.
+
+=item B<alt_authn_ldap_cafile> [cacertfile]
+
+Path to the CA certificate for the alternate authentication server.
+
+=item B<alt_authn_ldap_verify> [none|optional|require]
+
+Specify how to verify the alternet authentication server's certificate.
+
+=item B<alt_authn_ldap_timeout> [seconds]
+
+Specify the timeout, in seconds, to use when connecting to the alternate
+authentication server.
+
+=item B<alt_authn_ldap_bindpw> [binddn]
+
+Specify the DN to use for credentialed access to the alternate authentication
+server.
+
+=item B<alt_authn_ldap_binddn> [bindpw]
+
+Specify the password to use for credentialed access to the alternate
+authentication server.
 
 =back
 

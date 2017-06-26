@@ -124,7 +124,13 @@ else {
 if ( sc_authz( $CONFIG{'user'}, $CONFIG{'hostname'} ) ) {
 
     # Find and return the ssh-rsa key
-    sc_authn( $CONFIG{'user'} );
+    debug('processing primary authn');
+    sc_authn( $CONFIG{'user'}, q{} );
+
+    if ( defined $CONFIG{'alt_authn_ldap_uri'} ) {
+        debug('processing alternate authn');
+        sc_authn( $CONFIG{'user'}, 'alt_' );
+    }
 }
 
 exit 0;
@@ -132,38 +138,41 @@ exit 0;
 #------------------------------------------------------------------------------
 
 # sc_authn
-#   Generate the ssh-rsa keys for any certs belonging to the user
+#   Search for and/or generate ssh-keys for a user
 sub sc_authn {
-    my $username = shift || return;
+    my ( $username, $prefix ) = @_;
+
+    if ( !defined $username || $username eq q{} ) {
+        return;
+    }
 
     # Connect to the remote server
     my $ldap = ldap_connect(
-        $CONFIG{'authn_ldap_uri'},    $CONFIG{'authn_ldap_binddn'},
-        $CONFIG{'authn_ldap_bindpw'}, $CONFIG{'authn_ldap_capath'},
-        $CONFIG{'authn_ldap_cafile'}, $CONFIG{'authn_ldap_verify'},
-        $CONFIG{'authn_ldap_timeout'},
+        $CONFIG{ $prefix . 'authn_ldap_uri' },
+        $CONFIG{ $prefix . 'authn_ldap_binddn' },
+        $CONFIG{ $prefix . 'authn_ldap_bindpw' },
+        $CONFIG{ $prefix . 'authn_ldap_capath' },
+        $CONFIG{ $prefix . 'authn_ldap_cafile' },
+        $CONFIG{ $prefix . 'authn_ldap_verify' },
+        $CONFIG{ $prefix . 'authn_ldap_timeout' },
     );
     if ( !defined $ldap ) {
-        fatal( 'unable to connect to %s', $CONFIG{'authn_ldap_uri'} );
+        fatal( 'unable to connect to %s',
+            $CONFIG{ $prefix . 'authn_ldap_uri' } );
     }
 
-    # Ensure the user's account is active
-    if ( !is_active( $ldap, $username ) ) {
-        debug( '%s is not active', $username );
-        return;
-    }
-    debug( '%s is active', $username );
+    my $filter = expand_macros( $CONFIG{ $prefix . 'authn_ldap_filter' } );
+    debug( 'alt_authn: expanded filter is "%s"', $filter );
 
-    my $filter = expand_macros( $CONFIG{'authn_ldap_cert_filter'} );
-    debug( 'expanded filter is "%s"', $filter );
-
-    # Search for the certificate
-    debug( 'searching %s for certificates belonging to %s',
-        $CONFIG{'authn_ldap_uri'}, $username );
+    # Search for the user and the host atribute, including the wildcard
+    # attribute of '*'.  We only need to determine if a record exists so
+    # all we need LDAP to return is the matching DN.
+    debug( 'searching %s for %s',
+        $CONFIG{ $prefix . 'authn_ldap_uri' }, $username );
     my $ldap_msg = $ldap->search(
-        base      => $CONFIG{'authn_ldap_cert_basedn'},
+        base      => $CONFIG{ $prefix . 'authn_ldap_basedn' },
         filter    => $filter,
-        attrs     => ['userCertificate'],
+        attrs     => [ 'dn', 'sshPublicKey', 'userCertificate' ],
         sizelimit => 0,
     );
 
@@ -183,8 +192,20 @@ sub sc_authn {
     }
 
     # Iterate over the returned entries, looking
-    # for and processing any certificates.
+    # for and processing any ssh keys and certificates.
     foreach my $entry ( $ldap_msg->entries ) {
+
+        # Process the SSH key if we have one
+        if ( $entry->exists('sshPublicKey') ) {
+            debug('adding SSH options and username to key');
+            printf "%s%s %s\n", $CONFIG{'ssh_options'},
+              $entry->get_value('sshPublicKey'), $username;
+        }
+        else {
+            debug( 'no ssh key found for %s', $username );
+        }
+
+        # Process the x509 certificate if we have one
         if ( $entry->exists('userCertificate;binary') ) {
             process_cert( $entry->get_value('userCertificate;binary'),
                 $username );
@@ -286,40 +307,6 @@ sub get_ocsp_uri {
     return $ocsp_uri;
 }
 
-# is_active
-#   Verify that a user's account is active
-sub is_active {
-    my ( $ldap, $username ) = @_;
-
-    my $filter = expand_macros( $CONFIG{'authn_ldap_user_filter'} );
-    debug( 'expanded filter is "%s"', $filter );
-
-    # Search for the user and the host atribute, including the wildcard
-    # attribute of '*'.  We only need to determine if a record exists so
-    # all we need LDAP to return is the matching DN.
-    debug( 'searching %s for the account status of %s',
-        $CONFIG{'authn_ldap_uri'}, $username );
-    my $ldap_msg = $ldap->search(
-        base      => $CONFIG{'authn_ldap_user_basedn'},
-        filter    => $filter,
-        attrs     => ['dn'],
-        sizelimit => 0,
-    );
-
-    # A search failure will also mean the user is not authorized
-    if ( $ldap_msg->code != 0 ) {
-        error( 'search for uid=%s failed: %s', $username, $ldap_msg->error() );
-        return 0;
-    }
-
-    # Zero entries returned means the user is not active
-    if ( $ldap_msg->count == 0 ) {
-        return 0;
-    }
-    return 1;
-
-}
-
 # process_cert
 #   Validate and convert a x509 certificate
 #   into a ssh-rsa key
@@ -356,16 +343,17 @@ sub process_cert {
         debug('x509 extension verification disabled');
     }
 
-    # Get the OCSP URI if we don't already have it
-    if ( !defined $CONFIG{'ocsp_url'} || $CONFIG{'ocsp_url'} eq q{} ) {
-        my $ocsp_uri = get_ocsp_uri($x509);
-        $CONFIG{'ocsp_url'} = $ocsp_uri;
-        debug( 'certificate %s for %s has a ocsp_uri of %s',
-            $x509->serial(), $username, $ocsp_uri );
-    }
-
     # Validate the certificate using OCSP
     if ( $CONFIG{'verify_ocsp'} == 1 ) {
+
+        # Get the OCSP URI if we don't already have it
+        if ( !defined $CONFIG{'ocsp_url'} || $CONFIG{'ocsp_url'} eq q{} ) {
+            $CONFIG{'ocsp_url'} = get_ocsp_uri($x509);
+
+            debug( 'certificate %s for %s has a ocsp_uri of %s',
+                $x509->serial(), $username, $CONFIG{'ocsp_url'} );
+        }
+
         if ( !verify_ocsp( $x509->serial() ) ) {
             debug( 'cerficate %s for %s is not valid, skipping',
                 $x509->serial(), $username );
@@ -405,8 +393,6 @@ sub process_cert {
         # authorized_keys line.
         if ( defined $ssh_key && $ssh_key ne q{} ) {
             debug('adding SSH options and username to key');
-            debug( 'Sending: %s%s %s',
-                $CONFIG{'ssh_options'}, $ssh_key, $username );
             printf "%s%s %s\n", $CONFIG{'ssh_options'}, $ssh_key, $username;
         }
         else {
@@ -705,51 +691,33 @@ sub load_config {
     # Make sure the username is sane
     $config{'user'} = untaint_username( $config{'user'} );
 
-    # Make sure we have a sane URI
+    # Make sure our URIs are sane
     $config{'authz_ldap_uri'} = untaint_uri( $config{'authz_ldap_uri'} );
     $config{'authn_ldap_uri'} = untaint_uri( $config{'authn_ldap_uri'} );
-    if ( !defined $config{'authn_ldap_uri'} ) {
-        fatal( 'authn_ldap_uri not specified in %s', $config{'config'} );
-        exit 1;    # should never get here
+    $config{'alt_authn_ldap_uri'} =
+      untaint_uri( $config{'alt_authn_ldap_uri'} );
+
+    # Make sure that we have an authn URI, basedn, and filter
+    must_have_config( 'authn_ldap_uri',    %config );
+    must_have_config( 'authn_ldap_basedn', %config );
+    must_have_config( 'authn_ldap_filter', %config );
+
+    # If we have an alt_authn URI then make sure we
+    # have the other components that go with it.
+    if ( defined $config{'alt_authn_ldap_uri'}
+        && $config{'alt_authn_ldap_uri'} ne $EMPTY_STRING )
+    {
+        must_have_config( 'alt_authn_ldap_basedn', %config );
+        must_have_config( 'alt_authn_ldap_filter', %config );
     }
 
-    # Make sure that we have a base DN for searching users
-    if ( $config{'authn_ldap_user_basedn'} eq $EMPTY_STRING ) {
-        fatal( 'authn_ldap_user_basedn not specified in %s',
-            $config{'config'} );
-        exit 1;    # should never get here
-    }
-
-    # Make sure that we have a base DN for searching certificates
-    if ( $config{'authn_ldap_cert_basedn'} eq $EMPTY_STRING ) {
-        fatal( 'authn_ldap_cert_basedn not specified in %s',
-            $config{'config'} );
-        exit 1;    # should never get here
-    }
-
-    # Make sure that we have a user search filter
-    if ( $config{'authn_ldap_user_filter'} eq $EMPTY_STRING ) {
-        fatal( 'authn_ldap_user_filter not specified in %s',
-            $config{'config'} );
-        exit 1;    # should never get here
-    }
-
-    # Make sure that we have a cert search filter
-    if ( $config{'authn_ldap_cert_filter'} eq $EMPTY_STRING ) {
-        fatal( 'authn_ldap_cert_filter not specified in %s',
-            $config{'config'} );
-        exit 1;    # should never get here
-    }
-
-    if ( defined $config{'authz_ldap_uri'} ) {
-        if ( $config{'authz_ldap_basedn'} eq $EMPTY_STRING ) {
-            fatal( 'authz_ldap_basedn not specified in %s', $config{'config'} );
-            exit 1;    # should never get here
-        }
-        if ( $config{'authz_ldap_filter'} eq $EMPTY_STRING ) {
-            fatal( 'authz_ldap_filter not specified in %s', $config{'config'} );
-            exit 1;    # should never get here
-        }
+    # If we have an authz URI then make sure we
+    # have the other components that go with it.
+    if ( defined $config{'authz_ldap_uri'}
+        && $config{'alt_authz_ldap_uri'} ne $EMPTY_STRING )
+    {
+        must_have_config( 'alt_authz_ldap_basedn', %config );
+        must_have_config( 'alt_authz_ldap_filter', %config );
     }
 
     if ( defined $config{'ssh_options'} && $config{'ssh_options'} ne q{} ) {
@@ -763,6 +731,19 @@ sub load_config {
     $config{'ocsp_cafile'} = untaint_path( $config{'ocsp_cafile'} );
 
     return (%config);
+}
+
+# must_have_config
+#   Heler function to verify that a config hash contains
+#   a specific option and exit with a fatal message if it doesn't.
+sub must_have_config {
+    my ( $option, %config ) = @_;
+
+    if ( !defined $config{$option} || $config{$option} eq $EMPTY_STRING ) {
+        fatal( '%s not specified in %s', $option, $config{'config'} );
+        exit 1;    # should never get here
+    }
+    return;
 }
 
 # untaint_path(PATH) - untaint a pathname
