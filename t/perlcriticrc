@@ -1,0 +1,8 @@
+# perlcritic --exclude RequireRcsKeywords --exclude RequirePodSections
+# --exclude PodSpelling
+
+severity = brutal
+color    = 1
+verbose  = [%p] %m at line %l, column %c.  %e.  (Severity: %s)\n
+theme    = core
+exclude  = RequireRcsKeywords RequirePodSections PodSpelling
