@@ -714,10 +714,10 @@ sub load_config {
     # If we have an authz URI then make sure we
     # have the other components that go with it.
     if ( defined $config{'authz_ldap_uri'}
-        && $config{'alt_authz_ldap_uri'} ne $EMPTY_STRING )
+        && $config{'authz_ldap_uri'} ne $EMPTY_STRING )
     {
-        must_have_config( 'alt_authz_ldap_basedn', %config );
-        must_have_config( 'alt_authz_ldap_filter', %config );
+        must_have_config( 'authz_ldap_basedn', %config );
+        must_have_config( 'authz_ldap_filter', %config );
     }
 
     if ( defined $config{'ssh_options'} && $config{'ssh_options'} ne q{} ) {
