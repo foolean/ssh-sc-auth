@@ -87,7 +87,7 @@ my %options = (
     'authn_ldap_timeout'     => '10',
     'authn_ldap_bindpw'      => q{},
     'authn_ldap_binddn'      => q{},
-    'verify_x509_extensions' => 0,
+    'verify_x509'            => 0,
     'verify_ocsp'            => 0,
     'x509_key_usage'         => q{},
 );
@@ -332,7 +332,7 @@ sub process_cert {
     debug( 'certificate %s for %s is not expired', $x509->serial(), $username );
 
     # Make sure the certificate is the correct type
-    if ( $CONFIG{'verify_x509_extensions'} == 1 ) {
+    if ( $CONFIG{'verify_x509'} == 1 ) {
         if ( verify_x509( $x509, $username ) == 0 ) {
             error( 'insufficient keyUsage in certificate %s for %s, skipping',
                 $x509->serial(), $username );

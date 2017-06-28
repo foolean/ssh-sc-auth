@@ -154,7 +154,7 @@ Specify the password to use for credentialed access to the authorization server.
 
 =over 4
 
-=item B<verify_x509_extensions> [no|yes|true|false|1|0]
+=item B<verify_x509> [no|yes|true|false|1|0]
 
 Toggle the verification of the x509 key usage attributes on/off.
 
