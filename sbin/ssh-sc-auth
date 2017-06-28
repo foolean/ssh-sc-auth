@@ -162,7 +162,7 @@ sub sc_authn {
     }
 
     my $filter = expand_macros( $CONFIG{ $prefix . 'authn_ldap_filter' } );
-    debug( 'alt_authn: expanded filter is "%s"', $filter );
+    debug( 'expanded filter is "%s"', $filter );
 
     # Search for the user and the host atribute, including the wildcard
     # attribute of '*'.  We only need to determine if a record exists so
