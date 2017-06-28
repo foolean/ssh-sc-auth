@@ -1,22 +1,42 @@
 ssh-sc-auth - SSH SmartCard Authentication
 
-DESCRIPTION
------------
-
 ssh-sc-auth is a smart-card authentication handler for use with the
 AuthorizedKeysCommand feature of SSH.  The program will return a dynamic
-authorized_keys entry for the user, based on a certificate stored in a remote
-LDAP server.
+authorized_keys entries for the user, based on either sshPublicKey or
+SSL certificates stored in a remote LDAP server.
+
 
 INSTALLATION
 ------------
 
+# Debian:
+apt-get install                 \
+    libconfig-general-perl      \
+    libcrypt-openssl-rsa-perl   \
+    libcrypt-openssl-x509-perl  \
+    libnet-ldap-perl            \
+    libproc-processtable-perl   \
+    libtest-perl-critic-perl
+
+# CentOS:
+yum -y install                  \
+    perl-Module-Build           \
+    perl-Config-General         \
+    perl-Crypt-OpenSSL-RSA      \
+    perl-Crypt-OpenSSL-X509     \
+    perl-LDAP                   \
+    perl-Proc-ProcessTable      \
+    perl-Test-Perl-Critic
+
 perl Build.PL
 ./Build
+./Build test
 ./Build install
+
 
 UNINSTALL
 ---------
 
 ./Build uninstall
+
 
