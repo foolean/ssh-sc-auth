@@ -70,6 +70,7 @@ my %options = (
     'authz_ldap_basedn'      => q{},
     'authz_ldap_filter'      => q{},
     'authz_ldap_cafile'      => q{},
+    'authz_ldap_capath'      => q{},
     'authz_ldap_verify'      => 'never',
     'authz_ldap_timeout'     => '10',
     'authz_ldap_binddn'      => q{},
@@ -80,6 +81,7 @@ my %options = (
     'authn_ldap_basedn'      => q{},
     'authn_ldap_filter'      => q{},
     'authn_ldap_cafile'      => q{},
+    'authn_ldap_capath'      => q{},
     'authn_ldap_verify'      => 'never',
     'authn_ldap_timeout'     => '10',
     'authn_ldap_bindpw'      => q{},
@@ -88,6 +90,7 @@ my %options = (
     'alt_authn_ldap_basedn'  => q{},
     'alt_authn_ldap_filter'  => q{},
     'alt_authn_ldap_cafile'  => q{},
+    'alt_authn_ldap_capath'  => q{},
     'alt_authn_ldap_verify'  => 'never',
     'alt_authn_ldap_timeout' => '10',
     'alt_authn_ldap_bindpw'  => q{},
@@ -707,6 +710,14 @@ sub load_config {
     must_have_config( 'authn_ldap_basedn', %config );
     must_have_config( 'authn_ldap_filter', %config );
 
+    # Only one of authn's cafile or capath may be used
+    if (   $config{'authn_ldap_cafile'} ne q{}
+        && $config{'authn_ldap_capath'} ne q{} )
+    {
+        fatal('can not specify both authn cafile and capath');
+    }
+
+    # If we have an authz URI then make sure we
     # If we have an alt_authn URI then make sure we
     # have the other components that go with it.
     if ( defined $config{'alt_authn_ldap_uri'}
@@ -714,6 +725,13 @@ sub load_config {
     {
         must_have_config( 'alt_authn_ldap_basedn', %config );
         must_have_config( 'alt_authn_ldap_filter', %config );
+
+        # Only one of alt_authn's cafile or capath may be used
+        if (   $config{'alt_authn_ldap_cafile'} ne q{}
+            && $config{'alt_authn_ldap_capath'} ne q{} )
+        {
+            fatal('can not specify both alt_authn cafile and capath');
+        }
     }
 
     # If we have an authz URI then make sure we
@@ -723,6 +741,13 @@ sub load_config {
     {
         must_have_config( 'authz_ldap_basedn', %config );
         must_have_config( 'authz_ldap_filter', %config );
+
+        # Only one of authz's cafile or capath may be used
+        if (   $config{'authz_ldap_cafile'} ne q{}
+            && $config{'authz_ldap_capath'} ne q{} )
+        {
+            fatal('can not specify both authz cafile and capath');
+        }
     }
 
     if ( defined $config{'ssh_options'} && $config{'ssh_options'} ne q{} ) {
