@@ -52,6 +52,14 @@ UNINSTALL
 
 
 
+OPENSSH VERSION
+---------------
+
+You will need a version of OpenSSH that provides the AuthorizedKeysCommand
+feature.  I believe this is anything >= v6.6.1.  Debian Jessie and CentOS 7
+are known to have a useable version of OpenSSH.
+
+
 SSHD_CONFIG
 -----------
 
