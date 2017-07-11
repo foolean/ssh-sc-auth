@@ -231,13 +231,18 @@ sub sc_authn {
 sub sc_authz {
     my ( $username, $hostname ) = @_;
 
-    # No URI means the user is authorized by default
+    # No URI means that we will resort to local authorization by
+    # ensuring the user is known to the local system (getpwnam)
     if ( !defined $CONFIG{'authz_ldap_uri'}
         || $CONFIG{'authz_ldap_uri'} eq $EMPTY_STRING )
     {
-        debug('no authz uri, skipping authorization');
-        debug( '%s is authorized for access to %s', $username, $hostname );
-        return 1;
+        debug('no authz uri, resorting to local authorization');
+        if ( getpwnam $username ) {
+            debug( '%s is authorized for access to %s', $username, $hostname );
+            return 1;
+        }
+        debug( '%s is not authorized for access to %s', $username, $hostname );
+        return 0;
     }
 
     # Connect to the remote server
