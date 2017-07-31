@@ -35,7 +35,7 @@ perl Build.PL
 
 Note: you should create a user who will run ssh-sc and
 ensure that /usr/local/ssh-sc files are only owned by root,
-group readable by the AuthenticationKeyCommandUser.
+group readable by the AuthoriszedKeyCommandUser.
 
 Example:
     useradd -d /usr/local/ssh-sc -s /usr/sbin/nologin ssh-auth
@@ -86,3 +86,32 @@ prevent users from using their own keys (presumably passwordless).
 
 This will still allow the use of approved keys that are not part of
 the organization's SmartCard framework.
+
+
+SSH-AGENT AND AGENT-FORWARDING
+------------------------------
+
+The use of ssh-agent allows one to cache credentials in order to save the user
+from having to constantly enter passwords.  While it is unclear whether it is
+ssh-agent caching the user's pin or if it is OpenSC keeping the card unlocked, the
+same functionality exists when a smart-card is in use.  In a nutshell, a
+compromised client, running ssh-agent will allow the attacker to gain SSH
+access to remote systems without requiring the knowledge of the PIN or even
+having possession of the smart-card.  This gets further exacerbated when agent
+forwarding is in use as smart-card authentication is chained back to the
+user's system, which wouldn't require the PIN per the reasons outlined above.
+
+   RECOMMENDATIONS
+   ===============
+
+   1) Run ssh-sc-auth only on a bastion host and require password or token
+   based authentication at all internal hosts.
+
+   2) Disable agent forwarding by adding no-agent-forwarding to the
+   'ssh-options' configuration option of ssh-sc-auth and setting
+   AllowAgentForwarding to 'no' in sshd_config.
+
+   3) Run a restrictive or chrooted shell on the bastion so that the user
+   does not actually have command-line access to the bastion.
+
+
