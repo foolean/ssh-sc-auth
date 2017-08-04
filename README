@@ -67,6 +67,8 @@ SSHD_CONFIG
     AuthorizedKeysFile /etc/ssh/ssh_authorized_keys
     AuthorizedKeyscommand /usr/local/ssh-sc/sbin/ssh-sc-auth
     AuthorizedKeysCommandUser ssh-auth
+    AgentForwarding no
+    MaxSessions 1
 
 
 AUTHORIZED_KEYS FILES
@@ -95,23 +97,48 @@ The use of ssh-agent allows one to cache credentials in order to save the user
 from having to constantly enter passwords.  While it is unclear whether it is
 ssh-agent caching the user's pin or if it is OpenSC keeping the card unlocked, the
 same functionality exists when a smart-card is in use.  In a nutshell, a
-compromised client, running ssh-agent will allow the attacker to gain SSH
+compromised client running ssh-agent will allow the attacker to gain SSH
 access to remote systems without requiring the knowledge of the PIN or even
 having possession of the smart-card.  This gets further exacerbated when agent
 forwarding is in use as smart-card authentication is chained back to the
 user's system, which wouldn't require the PIN per the reasons outlined above.
 
-   RECOMMENDATIONS
-   ===============
+There is no assurance that the incomming connection is from a user with
+physical possession of the card and knowledge of the PIN or is from an
+attacker leveraging the victim's use of ssh-agent or agent-forwarding.
 
-   1) Run ssh-sc-auth only on a bastion host and require password or token
-   based authentication at all internal hosts.
 
-   2) Disable agent forwarding by adding no-agent-forwarding to the
-   'ssh-options' configuration option of ssh-sc-auth and setting
-   AllowAgentForwarding to 'no' in sshd_config.
+   RECOMMENDATION
+   ==============
 
-   3) Run a restrictive or chrooted shell on the bastion so that the user
-   does not actually have command-line access to the bastion.
+   * Run ssh-sc-auth only on a bastion host and require password or
+     token based authentication at all internal hosts.
 
+   * Disable agent forwarding by adding no-agent-forwarding to the
+     'ssh-options' configuration option of ssh-sc-auth and setting
+     AllowAgentForwarding to 'no' in sshd_config.
+
+   * Run a restrictive or chrooted shell on the bastion so that the
+     user does not actually have command-line access to the bastion.
+
+
+CONTROL MASTER
+--------------
+
+The use of ControlMaster enables the sharing of multiple sessions over a
+single connection.  When in use, the first connection requires authentication
+and subsequent connections do not.  A compromised client using ControlMaster
+will allow the attacker to gain SSH access to the remote systems without
+requiring the knowledge of the PIN or even having possession of the
+smart-card.
+
+There is no assurance that the incoming connection is from a user with
+physical possession of the card and knowledge of the PIN or is from an
+attacker leveraging the victim's use of ControlMaster.
+
+   
+   RECOMMENDATION
+   ==============
+
+   * Set MaxSessions to 1 in sshd_config.
 
