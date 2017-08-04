@@ -6,3 +6,6 @@ MANIFEST
 MANIFEST.SKIP
 README
 sbin/ssh-sc-auth
+selinux/ssh-sc-auth.te
+t/00_critique.t
+t/perlcriticrc
