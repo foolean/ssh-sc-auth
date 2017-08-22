@@ -617,7 +617,7 @@ sub ldap_disconnect {
 sub getpidname {
     my $pid = shift || return 'missing_pid';
 
-    my $t = Proc::ProcessTable->new();
+    my $t = Proc::ProcessTable->new( enable_ttys => 0 );
 
     foreach my $p ( @{ $t->table } ) {
         if ( $p->pid == $pid ) {
