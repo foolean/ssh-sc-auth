@@ -35,7 +35,7 @@ perl Build.PL
 
 Note: you should create a user who will run ssh-sc and
 ensure that /usr/local/ssh-sc files are only owned by root,
-group readable by the AuthoriszedKeyCommandUser.
+group readable by the AuthorizedKeyCommandUser.
 
 Example:
     useradd -d /usr/local/ssh-sc -s /usr/sbin/nologin ssh-auth
@@ -103,16 +103,16 @@ having possession of the smart-card.  This gets further exacerbated when agent
 forwarding is in use as smart-card authentication is chained back to the
 user's system, which wouldn't require the PIN per the reasons outlined above.
 
-There is no assurance that the incomming connection is from a user with
-physical possession of the card and knowledge of the PIN or is from an
-attacker leveraging the victim's use of ssh-agent or agent-forwarding.
+There is no assurance that the connection is from a user with physical
+possession of the card and knowledge of the PIN or is from an attacker
+leveraging the victim's use of ssh-agent or agent-forwarding.
 
 
    RECOMMENDATION
    ==============
 
-   * Run ssh-sc-auth only on a bastion host and require password or
-     token based authentication at all internal hosts.
+   * Run ssh-sc-auth only on a bastion host and require password and/or
+     some OTP authentication, such as SecurID, at all internal hosts.
 
    * Disable agent forwarding by adding no-agent-forwarding to the
      'ssh-options' configuration option of ssh-sc-auth and setting
@@ -132,9 +132,9 @@ will allow the attacker to gain SSH access to the remote systems without
 requiring the knowledge of the PIN or even having possession of the
 smart-card.
 
-There is no assurance that the incoming connection is from a user with
-physical possession of the card and knowledge of the PIN or is from an
-attacker leveraging the victim's use of ControlMaster.
+There is no assurance that the connection is from a user with physical
+possession of the card and knowledge of the PIN or is from an attacker
+leveraging the victim's use of ControlMaster.
 
    
    RECOMMENDATION
