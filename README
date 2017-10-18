@@ -10,7 +10,7 @@ INSTALLATION
 ------------
 
 # Debian:
-apt-get install                 \
+apt-get -y install              \
     libconfig-general-perl      \
     libcrypt-openssl-rsa-perl   \
     libcrypt-openssl-x509-perl  \
@@ -34,15 +34,15 @@ perl Build.PL
 ./Build install
 
 Note: you should create a user who will run ssh-sc and
-ensure that /usr/local/ssh-sc files are only owned by root,
+ensure that /opt/ssh-sc files are only owned by root,
 group readable by the AuthorizedKeyCommandUser.
 
 Example:
-    useradd -d /usr/local/ssh-sc -s /usr/sbin/nologin ssh-auth
-    chown -R root.ssh-auth /usr/local/ssh-sc
-    find /usr/local/ssh-sc -type d -exec chmod 750 {} \;
-    find /usr/local/ssh-sc -type f -exec chmod 640 {} \;
-    chmod 750 /usr/local/ssh-sc/sbin/*
+    useradd -d /opt/ssh-sc -s /usr/sbin/nologin ssh-auth
+    chown -R root.ssh-auth /opt/ssh-sc
+    find /opt/ssh-sc -type d -exec chmod 750 {} \;
+    find /opt/ssh-sc -type f -exec chmod 640 {} \;
+    chmod 750 /opt/ssh-sc/sbin/*
 
 
 UNINSTALL
@@ -65,7 +65,7 @@ SSHD_CONFIG
 
     PubkeyAuthentication yes
     AuthorizedKeysFile /etc/ssh/ssh_authorized_keys
-    AuthorizedKeyscommand /usr/local/ssh-sc/sbin/ssh-sc-auth
+    AuthorizedKeyscommand /opt/ssh-sc/sbin/ssh-sc-auth
     AuthorizedKeysCommandUser ssh-auth
     AgentForwarding no
     MaxSessions 1

@@ -56,7 +56,7 @@ my $SYSLOG_OPEN  = 0;      # Flag to indicate if syslog is open
 
 # Option defaults
 my %options = (
-    'config'                 => '/usr/local/ssh-sc/etc/ssh-sc-auth.conf',
+    'config'                 => '/opt/ssh-sc/etc/ssh-sc-auth.conf',
     'debug'                  => 0,
     'help'                   => 0,
     'hostname'               => hostname(),
@@ -934,7 +934,7 @@ Command-line
 
 sshd_config
     # /etc/ssh/sshd_config
-    AuthorizedKeysCommand /usr/local/ssh-sc/sbin/ssh-sc-auth
+    AuthorizedKeysCommand /opt/ssh-sc/sbin/ssh-sc-auth
     AuthorizedKeysCOmmandUser ssh-auth
 
 

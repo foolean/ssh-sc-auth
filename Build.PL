@@ -9,7 +9,7 @@ use Module::Build;
 
 our $VERSION = '1.0.0';
 
-our $INSTALL_BASE = '/usr/local/ssh-sc';
+our $INSTALL_BASE = '/opt/ssh-sc';
 
 my $class = Module::Build->subclass( code => <<'EOF');
     sub make_dir {
