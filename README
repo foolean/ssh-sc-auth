@@ -21,6 +21,7 @@ apt-get -y install              \
 # CentOS:
 yum -y install                  \
     perl-Module-Build           \
+    perl-Archive-Tar            \
     perl-Config-General         \
     perl-Crypt-OpenSSL-RSA      \
     perl-Crypt-OpenSSL-X509     \

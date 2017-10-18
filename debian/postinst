@@ -1,0 +1,12 @@
+#!/bin/bash
+
+# Create the ssh-auth user
+useradd -d /opt/ssh-sc -s /usr/sbin/nologin -c "SSH AuthorizedKeysCommandUser" -r ssh-auth
+
+# Set ownership of the ssh-sc directory
+chown -R root.ssh-auth /opt/ssh-sc
+
+# Set the mod of the ssh-sc directories and files
+find /opt/ssh-sc -type d -exec chmod 750 {} \;
+find /opt/ssh-sc -type f -exec chmod 640 {} \;
+chmod 750 /opt/ssh-sc/sbin/*

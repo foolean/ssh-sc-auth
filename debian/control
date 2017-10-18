@@ -1,0 +1,26 @@
+Source: ssh-sc-auth
+Section: net
+Priority: extra
+Maintainer: Bennett Samowich <bennett@foolean.org>
+Build-Depends: debhelper (>= 9),
+ libtest-perl-critic-perl,
+ libmodule-build-perl,
+ perl
+Standards-Version: 3.9.8
+Homepage: https://github.com/foolean/ssh-sc-auth
+Vcs-Git: https://github.com/foolean/ssh-sc-auth.git
+Vcs-Browser: https://github.com/foolean/ssh-sc-auth
+
+Package: ssh-sc-auth
+Architecture: any
+Depends: ${misc:Depends}, ${perl:Depends},
+ libconfig-general-perl,
+ libcrypt-openssl-rsa-perl,
+ libcrypt-openssl-x509-perl,
+ libnet-ldap-perl,
+ libproc-processtable-perl
+Description: SSH SmartCard Authentication
+ ssh-sc-auth is a smart-card authentication handler for use with the
+ AuthorizedKeysCommand feature of SSH.  The program will return a dynamic
+ authorized_keys entries for the user, based on either sshPublicKey or
+ SSL certificates stored in a remote LDAP server

@@ -1,0 +1,5 @@
+ssh-sc-auth (1.0.0-1) unstable; urgency=low
+
+  * Initial Release.
+
+ -- Bennett Samowich <bennett@foolean.org>  Tue, 17 Oct 2017 06:18:05 -0400

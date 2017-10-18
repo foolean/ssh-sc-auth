@@ -1,2 +1,5 @@
 ^\.git
 ^dev/
+^debian/
+^packaging/
+^Makefile

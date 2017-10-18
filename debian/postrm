@@ -1,0 +1,19 @@
+#!/bin/bash
+
+# Remove the ssh-auth user
+USER_EXISTS=$(getent passwd ssh-auth)
+if [ "${USER_EXISTS}" != "" ]
+then
+    userdel ssh-auth
+fi
+
+# Remove the ssh-sc directory
+rm -rf /opt/ssh-sc
+
+# KLUDGE! ... keep the /opt directory
+if [ ! -d /opt ]
+then
+    mkdir /opt
+    chown root.root /opt
+    chmod 755 /opt
+fi

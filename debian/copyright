@@ -1,0 +1,17 @@
+This work was packaged for Debian by:
+
+    Bennett Samowich <bennett@foolean.org> on Wed, 18 Oct 2017 06:37:20 -0400
+
+Copyright:
+
+    Copyright (C) 2017 Bennett Samowich
+
+License:
+
+    See: COPYING
+
+The Debian packaging is:
+
+    Copyright (C) 2012 Bennett Samowich <bennett@foolean.org>
+    and is licensed under the GPL version 3,
+    see "/usr/share/common-licenses/GPL-3".

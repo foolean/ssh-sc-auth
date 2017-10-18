@@ -38,6 +38,7 @@ my $class = Module::Build->subclass( code => <<'EOF');
                 $self->install_base,
                 $self->install_base . '/sbin',
                 $self->install_base . '/doc',
+                $self->install_base . '/doc/selinux',
                 $self->install_base . '/etc',
                 $self->install_base . '/etc/ssl',
                 $self->install_base . '/man',
@@ -151,7 +152,10 @@ my $build = $class->new(
     sbin_files         => {
         'sbin/ssh-sc-auth' => 'sbin/ssh-sc-auth',
     },
-    doc_files => { 'README' => 'doc/README.dist', },
+    doc_files => {
+        'README'                 => 'doc/README.dist',
+        'selinux/ssh-sc-auth.te' => 'doc/selinux/ssh-sc-auth.te',
+    },
     etc_files => {
         'etc/ssh-sc-auth.conf' => 'etc/ssh-sc-auth.conf',
     },
@@ -171,6 +175,7 @@ my $build = $class->new(
         'warnings'              => 0,
     },
     build_requires => {
+        'Archive::Tar'       => 0,
         'Digest::SHA'        => 0,
         'Module::Build'      => 0,
         'Pod::Find'          => 0,
