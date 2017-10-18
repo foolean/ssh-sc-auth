@@ -27,6 +27,9 @@ my $class = Module::Build->subclass( code => <<'EOF');
     sub ACTION_install {
         my $self = shift;
 
+        # Account for destdir
+        $self->install_base($self->destdir() . $self->install_base());
+
         # Create the directory structure
         make_dir (
             [
@@ -47,6 +50,9 @@ my $class = Module::Build->subclass( code => <<'EOF');
 
     sub ACTION_uninstall {
         my $self = shift;
+
+        # Account for destdir
+        $self->install_base($self->destdir() . $self->install_base());
 
         if ( -d $self->install_base() ) {
             printf "Removing %s\n", $self->install_base();
