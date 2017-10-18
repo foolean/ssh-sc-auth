@@ -13,12 +13,14 @@ our $INSTALL_BASE = '/opt/ssh-sc';
 
 my $class = Module::Build->subclass( code => <<'EOF');
     sub make_dir {
+        use File::Path qw( make_path );
+        
         my ( $dirs, $mode ) = @_;
 
         for my $dir ( @$dirs ) {
             if ( ! -d $dir ) {
-                printf "mkdir %s\n", $dir;
-                mkdir $dir;
+                printf "make_path %s\n", $dir;
+                make_path $dir;
             }
             chmod $mode, $dir;
         }
